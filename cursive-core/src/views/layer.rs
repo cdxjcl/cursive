@@ -1,4 +1,4 @@
-use crate::theme::ColorStyle;
+use crate::style::ColorStyle;
 use crate::view::{View, ViewWrapper};
 use crate::Printer;
 
@@ -18,7 +18,7 @@ new_default!(Layer<T: Default>);
 impl<T> Layer<T> {
     /// Wraps the given view.
     pub fn new(view: T) -> Self {
-        Self::with_color(view, ColorStyle::primary())
+        Self::with_color(view, ColorStyle::view())
     }
 
     /// Wraps the given view with a custom background color.
@@ -47,7 +47,29 @@ impl<T: View> ViewWrapper for Layer<T> {
             for y in 0..printer.size.y {
                 printer.print_hline((0, y), printer.size.x, " ");
             }
+            self.view.draw(printer);
         });
-        self.view.draw(printer);
     }
 }
+
+#[crate::blueprint(Layer::new(view))]
+struct Blueprint {
+    view: crate::views::BoxedView,
+    color: Option<ColorStyle>,
+}
+
+crate::manual_blueprint!(with layer, |config, context| {
+    let color = match config {
+        crate::builder::Config::Null => None,
+        config => Some(context.resolve(config)?),
+    };
+    Ok(move |view| {
+        let mut layer = Layer::new(view);
+
+        if let Some(color) = color {
+            layer.set_color(color);
+        }
+
+        layer
+    })
+});

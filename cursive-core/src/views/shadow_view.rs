@@ -1,6 +1,6 @@
 use crate::event::{Event, EventResult};
 use crate::rect::Rect;
-use crate::theme::ColorStyle;
+use crate::style::PaletteStyle;
 use crate::view::{View, ViewWrapper};
 use crate::Printer;
 use crate::Vec2;
@@ -86,8 +86,7 @@ impl<T: View> ViewWrapper for ShadowView<T> {
         }
 
         // Skip the first row/column
-        let offset =
-            Vec2::new(self.left_padding as usize, self.top_padding as usize);
+        let offset = Vec2::new(self.left_padding as usize, self.top_padding as usize);
         let printer = &printer.offset(offset);
         if printer.theme.shadow {
             let h = printer.size.y;
@@ -97,7 +96,7 @@ impl<T: View> ViewWrapper for ShadowView<T> {
                 return;
             }
 
-            printer.with_color(ColorStyle::shadow(), |printer| {
+            printer.with_style(PaletteStyle::Shadow, |printer| {
                 printer.print_hline((1, h - 1), w - 1, " ");
                 printer.print_vline((w - 1, 1), h - 1, " ");
             });
@@ -114,3 +113,10 @@ impl<T: View> ViewWrapper for ShadowView<T> {
             + self.top_left_padding()
     }
 }
+
+#[crate::blueprint(ShadowView::new(view))]
+struct Blueprint {
+    view: crate::views::BoxedView,
+}
+
+crate::manual_blueprint!(with shadow, |_, _| Ok(ShadowView::new));

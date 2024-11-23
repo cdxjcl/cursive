@@ -45,6 +45,10 @@ This example uses a `LinearView` to put multiple views side-by-side.
 Here we learn how to create a menubar at the top of the screen, and populate
 it with static and dynamic entried.
 
+## [`menubar_styles`](./menubar_styles.rs)
+
+Example of using StyledString in menubar lables.
+
 ## [`logs`](./logs.rs)
 
 This example defines a custom view to display asynchronous input from a
@@ -87,9 +91,13 @@ This example shows the effect of the `Color::TerminalDefault` setting.
 
 This example draws a colorful square to show off true color support.
 
+## [`colored_text`](./colored_text.rs)
+
+This example showcasing various methods to color and remove text styles, highlighting the limitations of Crossterm's raw ANSI output.
+
 ## [`refcell_view`](./refcell_view.rs)
 
-Here we show how to access multiple views concurently through their name.
+Here we show how to access multiple views concurrently through their name.
 
 ## [`progress`](./progress.rs)
 

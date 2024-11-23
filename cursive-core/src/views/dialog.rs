@@ -3,17 +3,14 @@ use crate::{
     direction::{Absolute, Direction, Relative},
     event::{AnyCb, Event, EventResult, Key},
     rect::Rect,
-    theme::ColorStyle,
+    style::PaletteStyle,
     utils::markup::StyledString,
-    view::{
-        CannotFocus, IntoBoxedView, Margins, Selector, View, ViewNotFound,
-    },
+    view::{CannotFocus, IntoBoxedView, Margins, Selector, View, ViewNotFound},
     views::{BoxedView, Button, DummyView, LastSizeView, TextView},
     Cursive, Printer, Vec2, With,
 };
-use std::cell::Cell;
+use parking_lot::Mutex;
 use std::cmp::{max, min};
-use unicode_width::UnicodeWidthStr;
 
 /// Identifies currently focused element in [`Dialog`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -24,19 +21,60 @@ pub enum DialogFocus {
     Button(usize),
 }
 
+#[cfg(feature = "builder")]
+impl crate::builder::Resolvable for DialogFocus {
+    fn from_config(
+        config: &crate::builder::Config,
+        context: &crate::builder::Context,
+    ) -> Result<Self, crate::builder::Error> {
+        use crate::builder::{Config, Context, Error, Object};
+        fn _from_config(config: &Config, context: &Context) -> Option<DialogFocus> {
+            // The config can be either:
+            // A string: content
+            // An object: button: i
+            if let Ok(string) = context.resolve::<String>(config) {
+                if string == "Content" || string == "content" {
+                    return Some(DialogFocus::Content);
+                } else {
+                    return None;
+                }
+            }
+
+            if let Ok(obj) = context.resolve::<Object>(config) {
+                let (key, value) = obj.iter().next()?;
+
+                if key != "Button" {
+                    return None;
+                }
+                let i = context.resolve(value).ok()?;
+                return Some(DialogFocus::Button(i));
+            }
+
+            None
+        }
+
+        _from_config(config, context).ok_or_else(|| {
+            Error::invalid_config(
+                r#"Expected either the string "Content", or a object with {Button: i}."#,
+                config,
+            )
+        })
+    }
+}
+
 struct ChildButton {
     button: LastSizeView<Button>,
-    offset: Cell<Vec2>,
+    offset: Mutex<Vec2>,
 }
 
 impl ChildButton {
-    pub fn new<F, S: Into<String>>(label: S, cb: F) -> Self
+    fn new<F>(label: StyledString, cb: F) -> Self
     where
-        F: 'static + Fn(&mut Cursive),
+        F: 'static + Fn(&mut Cursive) + Send + Sync,
     {
         ChildButton {
             button: LastSizeView::new(Button::new(label, cb)),
-            offset: Cell::new(Vec2::zero()),
+            offset: Mutex::new(Vec2::zero()),
         }
     }
 }
@@ -47,12 +85,11 @@ impl ChildButton {
 ///
 /// ```
 /// # use cursive_core::views::{Dialog,TextView};
-/// let dialog =
-///     Dialog::around(TextView::new("Hello!")).button("Ok", |s| s.quit());
+/// let dialog = Dialog::around(TextView::new("Hello!")).button("Ok", |s| s.quit());
 /// ```
 pub struct Dialog {
     // Possibly empty title.
-    title: String,
+    title: StyledString,
 
     // Where to put the title position
     title_position: HAlign,
@@ -95,7 +132,7 @@ impl Dialog {
         Dialog {
             content: LastSizeView::new(BoxedView::boxed(view)),
             buttons: Vec::new(),
-            title: String::new(),
+            title: StyledString::new(),
             title_position: HAlign::Center,
             focus: DialogFocus::Content,
             padding: Margins::lr(1, 1),
@@ -130,8 +167,7 @@ impl Dialog {
     /// ```
     /// use cursive_core::views::{Dialog, TextView};
     /// let dialog = Dialog::around(TextView::new("Hello!"));
-    /// let text_view: &TextView =
-    ///     dialog.get_content().downcast_ref::<TextView>().unwrap();
+    /// let text_view: &TextView = dialog.get_content().downcast_ref::<TextView>().unwrap();
     /// assert_eq!(text_view.get_content().source(), "Hello!");
     /// ```
     pub fn get_content(&self) -> &dyn View {
@@ -169,12 +205,9 @@ impl Dialog {
     /// Previous content will be returned.
     pub fn set_content<V: IntoBoxedView>(&mut self, view: V) -> Box<dyn View> {
         self.invalidate();
-        std::mem::replace(
-            &mut self.content,
-            LastSizeView::new(BoxedView::boxed(view)),
-        )
-        .view
-        .unwrap()
+        std::mem::replace(&mut self.content, LastSizeView::new(BoxedView::boxed(view)))
+            .view
+            .unwrap()
     }
 
     /// Convenient method to create a dialog with a simple text content.
@@ -209,19 +242,20 @@ impl Dialog {
     ///
     /// Consumes and returns self for easy chaining.
     #[must_use]
-    pub fn button<F, S: Into<String>>(self, label: S, cb: F) -> Self
+    pub fn button<F, S: Into<StyledString>>(self, label: S, cb: F) -> Self
     where
-        F: 'static + Fn(&mut Cursive),
+        F: 'static + Fn(&mut Cursive) + Send + Sync,
     {
         self.with(|s| s.add_button(label, cb))
     }
 
     /// Adds a button to the dialog with the given label and callback.
-    pub fn add_button<F, S: Into<String>>(&mut self, label: S, cb: F)
+    #[crate::callback_helpers]
+    pub fn add_button<F, S: Into<StyledString>>(&mut self, label: S, cb: F)
     where
-        F: 'static + Fn(&mut Cursive),
+        F: 'static + Fn(&mut Cursive) + Send + Sync,
     {
-        self.buttons.push(ChildButton::new(label, cb));
+        self.buttons.push(ChildButton::new(label.into(), cb));
         self.invalidate();
     }
 
@@ -308,7 +342,7 @@ impl Dialog {
     /// let dialog = Dialog::text("Hello!").dismiss_button("Close");
     /// ```
     #[must_use]
-    pub fn dismiss_button<S: Into<String>>(self, label: S) -> Self {
+    pub fn dismiss_button<S: Into<StyledString>>(self, label: S) -> Self {
         self.button(label, |s| {
             s.pop_layer();
         })
@@ -326,19 +360,19 @@ impl Dialog {
     /// let dialog = Dialog::info("Some info").title("Read me!");
     /// ```
     #[must_use]
-    pub fn title<S: Into<String>>(self, label: S) -> Self {
+    pub fn title<S: Into<StyledString>>(self, label: S) -> Self {
         self.with(|s| s.set_title(label))
     }
 
     /// Sets the title of the dialog.
-    pub fn set_title<S: Into<String>>(&mut self, label: S) {
+    pub fn set_title<S: Into<StyledString>>(&mut self, label: S) {
         self.title = label.into();
         self.invalidate();
     }
 
     /// Get the title of the dialog.
     pub fn get_title(&self) -> &str {
-        &self.title
+        self.title.source()
     }
 
     /// Sets the horizontal position of the title in the dialog.
@@ -383,13 +417,7 @@ impl Dialog {
     ///
     /// Takes Left, Right, Top, Bottom fields.
     #[must_use]
-    pub fn padding_lrtb(
-        self,
-        left: usize,
-        right: usize,
-        top: usize,
-        bottom: usize,
-    ) -> Self {
+    pub fn padding_lrtb(self, left: usize, right: usize, top: usize, bottom: usize) -> Self {
         self.padding(Margins::lrtb(left, right, top, bottom))
     }
 
@@ -475,9 +503,7 @@ impl Dialog {
 
         self.focus = match new_focus {
             DialogFocus::Content => DialogFocus::Content,
-            DialogFocus::Button(_) if self.buttons.is_empty() => {
-                DialogFocus::Content
-            }
+            DialogFocus::Button(_) if self.buttons.is_empty() => DialogFocus::Content,
             DialogFocus::Button(c) => {
                 if self.focus == DialogFocus::Content {
                     result = self.content.on_event(Event::FocusLost);
@@ -493,9 +519,10 @@ impl Dialog {
 
     // An event is received while the content is in focus
     fn on_event_content(&mut self, event: Event) -> EventResult {
-        match self.content.on_event(
-            event.relativized((self.padding + self.borders).top_left()),
-        ) {
+        match self
+            .content
+            .on_event(event.relativized((self.padding + self.borders).top_left()))
+        {
             EventResult::Ignored => {
                 if self.buttons.is_empty() {
                     EventResult::Ignored
@@ -507,8 +534,7 @@ impl Dialog {
 
                             // Return the content's FocusLost trigger, but also make sure it is
                             // consumed.
-                            EventResult::Consumed(None)
-                                .and(self.content.on_event(Event::FocusLost))
+                            EventResult::Consumed(None).and(self.content.on_event(Event::FocusLost))
                         }
                         _ => EventResult::Ignored,
                     }
@@ -519,38 +545,28 @@ impl Dialog {
     }
 
     // An event is received while a button is in focus
-    fn on_event_button(
-        &mut self,
-        event: Event,
-        button_id: usize,
-    ) -> EventResult {
+    fn on_event_button(&mut self, event: Event, button_id: usize) -> EventResult {
         let result = {
             let button = &mut self.buttons[button_id];
             button
                 .button
-                .on_event(event.relativized(button.offset.get()))
+                .on_event(event.relativized(*button.offset.lock()))
         };
         match result {
             EventResult::Ignored => {
                 match event {
                     // Up goes back to the content
                     Event::Key(Key::Up) => {
-                        if let Ok(res) =
-                            self.content.take_focus(Direction::down())
-                        {
+                        if let Ok(res) = self.content.take_focus(Direction::down()) {
                             self.focus = DialogFocus::Content;
                             res
                         } else {
                             EventResult::Ignored
                         }
                     }
-                    Event::Shift(Key::Tab)
-                        if self.focus == DialogFocus::Button(0) =>
-                    {
+                    Event::Shift(Key::Tab) if self.focus == DialogFocus::Button(0) => {
                         // If we're at the first button, jump back to the content.
-                        if let Ok(res) =
-                            self.content.take_focus(Direction::back())
-                        {
+                        if let Ok(res) = self.content.take_focus(Direction::back()) {
                             self.focus = DialogFocus::Content;
                             res
                         } else {
@@ -567,9 +583,7 @@ impl Dialog {
                     }
                     Event::Key(Key::Tab)
                         if self.focus
-                            == DialogFocus::Button(
-                                self.buttons.len().saturating_sub(1),
-                            ) =>
+                            == DialogFocus::Button(self.buttons.len().saturating_sub(1)) =>
                     {
                         // End of the line
                         EventResult::Ignored
@@ -583,9 +597,7 @@ impl Dialog {
                         EventResult::Consumed(None)
                     }
                     // Left and Right move to other buttons
-                    Event::Key(Key::Right)
-                        if button_id + 1 < self.buttons.len() =>
-                    {
+                    Event::Key(Key::Right) if button_id + 1 < self.buttons.len() => {
                         self.focus = DialogFocus::Button(button_id + 1);
                         EventResult::Consumed(None)
                     }
@@ -632,7 +644,7 @@ impl Dialog {
             let size = button.button.size;
             // Add some special effect to the focused button
             let position = Vec2::new(offset, y);
-            button.offset.set(position);
+            *button.offset.lock() = position;
             button.button.draw(
                 &printer
                     .offset(position)
@@ -650,9 +662,8 @@ impl Dialog {
 
     fn draw_content(&self, printer: &Printer, buttons_height: usize) {
         // What do we have left?
-        let taken = Vec2::new(0, buttons_height)
-            + self.borders.combined()
-            + self.padding.combined();
+        let taken =
+            Vec2::new(0, buttons_height) + self.borders.combined() + self.padding.combined();
 
         let inner_size = match printer.size.checked_sub(taken) {
             Some(s) => s,
@@ -684,8 +695,8 @@ impl Dialog {
                 printer.print((x + len, 0), " ├");
             });
 
-            printer.with_color(ColorStyle::title_primary(), |p| {
-                p.print((x, 0), &self.title)
+            printer.with_style(PaletteStyle::TitlePrimary, |p| {
+                p.print_styled((x, 0), &self.title)
             });
         }
     }
@@ -711,13 +722,12 @@ impl Dialog {
             // Now that we have a relative position, checks for buttons?
             if let Some(i) = self.buttons.iter().position(|btn| {
                 // If position fits there...
-                position.fits_in_rect(btn.offset.get(), btn.button.size)
+                position.fits_in_rect(*btn.offset.lock(), btn.button.size)
             }) {
                 return Some(self.set_focus(DialogFocus::Button(i)));
-            } else if position.fits_in_rect(
-                (self.padding + self.borders).top_left(),
-                self.content.size,
-            ) {
+            } else if position
+                .fits_in_rect((self.padding + self.borders).top_left(), self.content.size)
+            {
                 if let Ok(res) = self.content.take_focus(Direction::none()) {
                     // Or did we click the content?
                     self.focus = DialogFocus::Content;
@@ -832,10 +842,7 @@ impl View for Dialog {
         })
     }
 
-    fn take_focus(
-        &mut self,
-        source: Direction,
-    ) -> Result<EventResult, CannotFocus> {
+    fn take_focus(&mut self, source: Direction) -> Result<EventResult, CannotFocus> {
         // TODO: This may depend on button position relative to the content?
         //
         match source {
@@ -854,9 +861,7 @@ impl View for Dialog {
                         }
                         res
                     }
-                    (DialogFocus::Content, false) => {
-                        self.content.take_focus(source)
-                    }
+                    (DialogFocus::Content, false) => self.content.take_focus(source),
                     (DialogFocus::Content, true) => {
                         // Content had focus, but now refuses to take it again. So it loses it.
                         match self.content.take_focus(source) {
@@ -885,8 +890,7 @@ impl View for Dialog {
                     let mut result = EventResult::consumed();
                     if self.focus == DialogFocus::Content {
                         // The content had focus, but now refuses to take it.
-                        result = result
-                            .and(self.content.on_event(Event::FocusLost));
+                        result = result.and(self.content.on_event(Event::FocusLost));
                     }
                     self.focus = DialogFocus::Button(0);
                     Ok(result)
@@ -899,8 +903,7 @@ impl View for Dialog {
                 if !self.buttons.is_empty() {
                     let mut result = EventResult::consumed();
                     if self.focus == DialogFocus::Content {
-                        result = result
-                            .and(self.content.on_event(Event::FocusLost));
+                        result = result.and(self.content.on_event(Event::FocusLost));
                     }
                     self.focus = DialogFocus::Button(self.buttons.len() - 1);
                     Ok(result)
@@ -914,18 +917,11 @@ impl View for Dialog {
         }
     }
 
-    fn call_on_any<'a>(
-        &mut self,
-        selector: &Selector<'_>,
-        callback: AnyCb<'a>,
-    ) {
+    fn call_on_any(&mut self, selector: &Selector, callback: AnyCb) {
         self.content.call_on_any(selector, callback);
     }
 
-    fn focus_view(
-        &mut self,
-        selector: &Selector<'_>,
-    ) -> Result<EventResult, ViewNotFound> {
+    fn focus_view(&mut self, selector: &Selector) -> Result<EventResult, ViewNotFound> {
         self.content.focus_view(selector)
     }
 
@@ -941,3 +937,89 @@ impl View for Dialog {
         self.invalidated || self.content.needs_relayout()
     }
 }
+
+/*
+#[crate::blueprint(Dialog::new())]
+struct Blueprint {
+    title: String,
+
+    content: Option<BoxedView>,
+
+    // TODO: buttons?
+    // Define some Button type?
+    // Implement Resolvable as blueprints?
+    // Allow blueprint(foreach) with multiple arguments?
+    // Ex: foreach(add_button_with_cb( .key, .value ))
+}
+*/
+
+crate::manual_blueprint!(Dialog, |config, context| {
+    use crate::builder::{Config, Context, Error, Resolvable};
+    let mut dialog = Dialog::new();
+
+    if let Some(title) = context.resolve(&config["title"])? {
+        dialog.set_title::<StyledString>(title);
+    }
+
+    if let Some(title_position) = context.resolve(&config["title_position"])? {
+        dialog.set_title_position(title_position);
+    }
+
+    let content: Option<BoxedView> = context.resolve(&config["content"])?;
+    if let Some(content) = content {
+        dialog.set_content(content);
+    }
+
+    if let Some(padding) = context.resolve(&config["padding"])? {
+        dialog.set_padding(padding);
+    }
+
+    struct Btn {
+        key: String,
+        value: std::sync::Arc<dyn Fn(&mut Cursive) + Send + Sync>,
+    }
+
+    impl Resolvable for Btn {
+        fn from_config(config: &Config, context: &Context) -> Result<Self, Error> {
+            let config = config
+                .as_object()
+                .ok_or_else(|| Error::invalid_config("Expected object", config))?;
+
+            let (key, value) = config
+                .iter()
+                .next()
+                .ok_or_else(|| Error::invalid_config("Expected non-empty object", config))?;
+
+            let key = key.into();
+            let value = context.resolve(value)?;
+
+            Ok(Btn { key, value })
+        }
+    }
+
+    let buttons: Vec<Btn> = context.resolve(&config["buttons"])?;
+    for btn in buttons {
+        dialog.add_button_with_cb(btn.key, btn.value);
+    }
+
+    if let Some(focus) = context.resolve(&config["focus"])? {
+        dialog.set_focus(focus);
+    }
+
+    Ok(dialog)
+});
+
+/*
+#[crate::fn_blueprint(Dialog::info())]
+struct Info(String);
+*/
+
+// We can define some functions
+crate::fn_blueprint!("Dialog.info", |config, context| {
+    let message: StyledString = context.resolve(config)?;
+
+    // We want to return a generic single-argument callback.
+    Ok(Dialog::add_button_cb(move |s| {
+        s.add_layer(Dialog::info(message.clone()));
+    }))
+});

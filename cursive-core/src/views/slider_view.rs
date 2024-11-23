@@ -1,13 +1,13 @@
 use crate::{
     direction::{Direction, Orientation},
     event::{Callback, Event, EventResult, Key, MouseButton, MouseEvent},
-    theme::ColorStyle,
+    style::PaletteStyle,
     view::{CannotFocus, View},
     Cursive, Printer, Vec2, With,
 };
-use std::rc::Rc;
+use std::sync::Arc;
 
-type SliderCallback = dyn Fn(&mut Cursive, usize);
+type SliderCallback = dyn Fn(&mut Cursive, usize) + Send + Sync;
 
 /// A horizontal or vertical slider.
 ///
@@ -29,8 +29,8 @@ type SliderCallback = dyn Fn(&mut Cursive, usize);
 /// ```
 pub struct SliderView {
     orientation: Orientation,
-    on_change: Option<Rc<SliderCallback>>,
-    on_enter: Option<Rc<SliderCallback>>,
+    on_change: Option<Arc<SliderCallback>>,
+    on_enter: Option<Arc<SliderCallback>>,
     value: usize,
     max_value: usize,
     dragging: bool,
@@ -94,23 +94,41 @@ impl SliderView {
     }
 
     /// Sets a callback to be called when the slider is moved.
-    #[must_use]
-    pub fn on_change<F>(mut self, callback: F) -> Self
+    #[crate::callback_helpers]
+    pub fn set_on_change<F>(&mut self, callback: F)
     where
-        F: Fn(&mut Cursive, usize) + 'static,
+        F: Fn(&mut Cursive, usize) + 'static + Send + Sync,
     {
-        self.on_change = Some(Rc::new(callback));
-        self
+        self.on_change = Some(Arc::new(callback));
     }
 
-    /// Sets a callback to be called when the <Enter> key is pressed.
+    /// Sets a callback to be called when the slider is moved.
+    ///
+    /// Chainable variant.
     #[must_use]
-    pub fn on_enter<F>(mut self, callback: F) -> Self
+    pub fn on_change<F>(self, callback: F) -> Self
     where
-        F: Fn(&mut Cursive, usize) + 'static,
+        F: Fn(&mut Cursive, usize) + 'static + Send + Sync,
     {
-        self.on_enter = Some(Rc::new(callback));
-        self
+        self.with(|s| s.set_on_change(callback))
+    }
+
+    /// Sets a callback to be called when the `<Enter>` key is pressed.
+    #[crate::callback_helpers]
+    pub fn set_on_enter<F>(&mut self, callback: F)
+    where
+        F: Fn(&mut Cursive, usize) + 'static + Send + Sync,
+    {
+        self.on_enter = Some(Arc::new(callback));
+    }
+
+    /// Sets a callback to be called when the `<Enter>` key is pressed.
+    #[must_use]
+    pub fn on_enter<F>(self, callback: F) -> Self
+    where
+        F: Fn(&mut Cursive, usize) + 'static + Send + Sync,
+    {
+        self.with(|s| s.set_on_enter(callback))
     }
 
     fn get_change_result(&self) -> EventResult {
@@ -148,20 +166,17 @@ impl SliderView {
 impl View for SliderView {
     fn draw(&self, printer: &Printer) {
         match self.orientation {
-            Orientation::Vertical => {
-                printer.print_vline((0, 0), self.max_value, "|")
-            }
-            Orientation::Horizontal => {
-                printer.print_hline((0, 0), self.max_value, "-")
-            }
+            Orientation::Vertical => printer.print_vline((0, 0), self.max_value, "|"),
+            Orientation::Horizontal => printer.print_hline((0, 0), self.max_value, "-"),
         }
 
-        let color = if printer.focused {
-            ColorStyle::highlight()
+        let style = if printer.focused {
+            PaletteStyle::Highlight
         } else {
-            ColorStyle::highlight_inactive()
+            PaletteStyle::HighlightInactive
         };
-        printer.with_color(color, |printer| {
+
+        printer.with_style(style, |printer| {
             printer.print(self.orientation.make_vec(self.value, 0), " ");
         });
     }
@@ -172,26 +187,14 @@ impl View for SliderView {
 
     fn on_event(&mut self, event: Event) -> EventResult {
         match event {
-            Event::Key(Key::Left)
-                if self.orientation == Orientation::Horizontal =>
-            {
+            Event::Key(Key::Left) if self.orientation == Orientation::Horizontal => {
                 self.slide_minus()
             }
-            Event::Key(Key::Right)
-                if self.orientation == Orientation::Horizontal =>
-            {
+            Event::Key(Key::Right) if self.orientation == Orientation::Horizontal => {
                 self.slide_plus()
             }
-            Event::Key(Key::Up)
-                if self.orientation == Orientation::Vertical =>
-            {
-                self.slide_minus()
-            }
-            Event::Key(Key::Down)
-                if self.orientation == Orientation::Vertical =>
-            {
-                self.slide_plus()
-            }
+            Event::Key(Key::Up) if self.orientation == Orientation::Vertical => self.slide_minus(),
+            Event::Key(Key::Down) if self.orientation == Orientation::Vertical => self.slide_plus(),
             Event::Key(Key::Enter) if self.on_enter.is_some() => {
                 let value = self.value;
                 let cb = self.on_enter.clone().unwrap();
@@ -206,10 +209,7 @@ impl View for SliderView {
             } if self.dragging => {
                 let position = position.saturating_sub(offset);
                 let position = self.orientation.get(&position);
-                let position = ::std::cmp::min(
-                    position,
-                    self.max_value.saturating_sub(1),
-                );
+                let position = ::std::cmp::min(position, self.max_value.saturating_sub(1));
                 self.value = position;
                 self.get_change_result()
             }
@@ -235,10 +235,17 @@ impl View for SliderView {
         }
     }
 
-    fn take_focus(
-        &mut self,
-        _: Direction,
-    ) -> Result<EventResult, CannotFocus> {
+    fn take_focus(&mut self, _: Direction) -> Result<EventResult, CannotFocus> {
         Ok(EventResult::Consumed(None))
     }
+}
+
+// TODO: Rename the view itself as Slider to match the config?
+#[crate::blueprint(SliderView::new(orientation, max_value))]
+struct Blueprint {
+    orientation: Orientation,
+    max_value: usize,
+
+    on_change: Option<_>,
+    on_enter: Option<_>,
 }

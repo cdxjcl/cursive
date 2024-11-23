@@ -38,11 +38,7 @@ impl<T> ResizedView<T> {
     /// Creates a new `ResizedView` with the given width and height requirements.
     ///
     /// `None` values will use the wrapped view's preferences.
-    pub fn new(
-        width: SizeConstraint,
-        height: SizeConstraint,
-        view: T,
-    ) -> Self {
+    pub fn new(width: SizeConstraint, height: SizeConstraint, view: T) -> Self {
         ResizedView {
             size: (width, height).into(),
             invalidated: true,
@@ -51,11 +47,7 @@ impl<T> ResizedView<T> {
     }
 
     /// Sets the size constraints for this view.
-    pub fn set_constraints(
-        &mut self,
-        width: SizeConstraint,
-        height: SizeConstraint,
-    ) {
+    pub fn set_constraints(&mut self, width: SizeConstraint, height: SizeConstraint) {
         self.set_width(width);
         self.set_height(height);
     }
@@ -89,20 +81,12 @@ impl<T> ResizedView<T> {
 
     /// Wraps `view` in a new `ResizedView` with fixed width.
     pub fn with_fixed_width(width: usize, view: T) -> Self {
-        ResizedView::new(
-            SizeConstraint::Fixed(width),
-            SizeConstraint::Free,
-            view,
-        )
+        ResizedView::new(SizeConstraint::Fixed(width), SizeConstraint::Free, view)
     }
 
     /// Wraps `view` in a new `ResizedView` with fixed height.
     pub fn with_fixed_height(height: usize, view: T) -> Self {
-        ResizedView::new(
-            SizeConstraint::Free,
-            SizeConstraint::Fixed(height),
-            view,
-        )
+        ResizedView::new(SizeConstraint::Free, SizeConstraint::Fixed(height), view)
     }
 
     /// Wraps `view` in a `ResizedView` which will take all available space.
@@ -217,6 +201,7 @@ impl<T: View> ViewWrapper for ResizedView<T> {
 
         // This is the size the child would like to have.
         // Given the constraints of our box.
+        // TODO: Skip running this if not needed?
         let child_size = self.view.required_size(req);
 
         // Some of this request will be granted, but maybe not all.
@@ -361,3 +346,67 @@ mod tests {
         );
     }
 }
+
+#[crate::blueprint(ResizedView::new(SizeConstraint::Free, SizeConstraint::Free, view))]
+struct Blueprint {
+    view: crate::views::BoxedView,
+    width: Option<SizeConstraint>,
+    height: Option<SizeConstraint>,
+}
+
+crate::manual_blueprint!(with full_screen, |_config, _context| {
+    Ok(crate::views::ResizedView::with_full_screen)
+});
+
+crate::manual_blueprint!(with full_width, |_config, _context| {
+    Ok(crate::views::ResizedView::with_full_width)
+});
+
+crate::manual_blueprint!(with full_height, |_config, _context| {
+    Ok(crate::views::ResizedView::with_full_height)
+});
+
+crate::manual_blueprint!(with fixed_size, |config, context| {
+    let size: Vec2 = context.resolve(config)?;
+    Ok(move |view| crate::views::ResizedView::with_fixed_size(size, view))
+});
+
+crate::manual_blueprint!(with max_size, |config, context| {
+    let size: Vec2 = context.resolve(config)?;
+    Ok(move |view| crate::views::ResizedView::with_max_size(size, view))
+});
+
+crate::manual_blueprint!(with min_size, |config, context| {
+    let size: Vec2 = context.resolve(config)?;
+    Ok(move |view| crate::views::ResizedView::with_min_size(size, view))
+});
+
+crate::manual_blueprint!(with fixed_width, |config, context| {
+    let width = context.resolve(config)?;
+    Ok(move |view| crate::views::ResizedView::with_fixed_width(width, view))
+});
+
+crate::manual_blueprint!(with fixed_height, |config, context| {
+    let height = context.resolve(config)?;
+    Ok(move |view| crate::views::ResizedView::with_fixed_height(height, view))
+});
+
+crate::manual_blueprint!(with max_width, |config, context| {
+    let width = context.resolve(config)?;
+    Ok(move |view| crate::views::ResizedView::with_max_width(width, view))
+});
+
+crate::manual_blueprint!(with max_height, |config, context| {
+    let height = context.resolve(config)?;
+    Ok(move |view| crate::views::ResizedView::with_max_height(height, view))
+});
+
+crate::manual_blueprint!(with min_width, |config, context| {
+    let width = context.resolve(config)?;
+    Ok(move |view| crate::views::ResizedView::with_min_width(width, view))
+});
+
+crate::manual_blueprint!(with min_height, |config, context| {
+    let height = context.resolve(config)?;
+    Ok(move |view| crate::views::ResizedView::with_min_height(height, view))
+});

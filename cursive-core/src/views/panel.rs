@@ -1,12 +1,12 @@
 use crate::align::*;
 use crate::event::{Event, EventResult};
 use crate::rect::Rect;
-use crate::theme::ColorStyle;
+use crate::style::PaletteStyle;
+use crate::utils::markup::StyledString;
 use crate::view::{View, ViewWrapper};
 use crate::Printer;
 use crate::Vec2;
 use crate::With;
-use unicode_width::UnicodeWidthStr;
 
 /// Draws a border around a wrapped view.
 #[derive(Debug)]
@@ -15,7 +15,7 @@ pub struct Panel<V> {
     view: V,
 
     // Possibly empty title.
-    title: String,
+    title: StyledString,
 
     // Where to put the title position
     title_position: HAlign,
@@ -34,7 +34,7 @@ impl<V> Panel<V> {
     pub fn new(view: V) -> Self {
         Panel {
             view,
-            title: String::new(),
+            title: StyledString::new(),
             title_position: HAlign::Center,
             invalidated: true,
         }
@@ -44,12 +44,12 @@ impl<V> Panel<V> {
     ///
     /// If not empty, it will be visible at the top.
     #[must_use]
-    pub fn title<S: Into<String>>(self, label: S) -> Self {
+    pub fn title<S: Into<StyledString>>(self, label: S) -> Self {
         self.with(|s| s.set_title(label))
     }
 
     /// Sets the title of the dialog.
-    pub fn set_title<S: Into<String>>(&mut self, label: S) {
+    pub fn set_title<S: Into<StyledString>>(&mut self, label: S) {
         self.title = label.into();
         self.invalidate();
     }
@@ -69,20 +69,18 @@ impl<V> Panel<V> {
 
     fn draw_title(&self, printer: &Printer) {
         if !self.title.is_empty() {
-            let available = match printer.size.x.checked_sub(2 * TITLE_SPACING)
-            {
+            let available = match printer.size.x.checked_sub(2 * TITLE_SPACING) {
                 Some(available) => available,
                 None => return, /* Panel is too small to even write the decoration. */
             };
             let len = std::cmp::min(self.title.width(), available);
-            let x =
-                TITLE_SPACING + self.title_position.get_offset(len, available);
+            let x = TITLE_SPACING + self.title_position.get_offset(len, available);
 
             printer
                 .offset((x, 0))
                 .cropped((len, 1))
-                .with_color(ColorStyle::title_primary(), |p| {
-                    p.print((0, 0), &self.title)
+                .with_style(PaletteStyle::TitlePrimary, |p| {
+                    p.print_styled((0, 0), &self.title)
                 });
             printer.with_high_border(false, |printer| {
                 printer.print((x - 2, 0), "┤ ");
@@ -139,3 +137,37 @@ impl<V: View> ViewWrapper for Panel<V> {
         self.invalidated || self.view.needs_relayout()
     }
 }
+
+#[crate::blueprint(Panel::new(view))]
+struct Blueprint {
+    view: crate::views::BoxedView,
+
+    title: Option<StyledString>,
+    title_position: Option<HAlign>,
+}
+
+// TODO: reduce code duplication between blueprints for the same view.
+crate::manual_blueprint!(with panel, |config, context| {
+    let title = match config {
+        crate::builder::Config::String(_) => context.resolve(config)?,
+        crate::builder::Config::Object(config) => {
+            match config.get("title") {
+                Some(title) => context.resolve(title)?,
+                None => StyledString::new()
+            }
+        }
+        _ => StyledString::new(),
+    };
+
+    let title_position = context.resolve(&config["title_position"])?;
+
+    Ok(move |view| {
+        let mut panel = crate::views::Panel::new(view).title(title);
+
+        if let Some(title_position) = title_position {
+            panel.set_title_position(title_position);
+        }
+
+        panel
+    })
+});

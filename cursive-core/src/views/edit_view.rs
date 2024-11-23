@@ -2,13 +2,12 @@ use crate::{
     direction::Direction,
     event::{Callback, Event, EventResult, Key, MouseEvent},
     rect::Rect,
-    theme::{ColorStyle, Effect},
+    style::{PaletteStyle, StyleType},
     utils::lines::simple::{simple_prefix, simple_suffix},
     view::{CannotFocus, View},
     Cursive, Printer, Vec2, With,
 };
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -16,12 +15,12 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 ///
 /// Arguments are the `Cursive`, current content of the input and cursor
 /// position
-pub type OnEdit = dyn Fn(&mut Cursive, &str, usize);
+pub type OnEdit = dyn Fn(&mut Cursive, &str, usize) + Send + Sync;
 
 /// Closure type for callbacks when Enter is pressed.
 ///
 /// Arguments are the `Cursive` and the content of the input.
-pub type OnSubmit = dyn Fn(&mut Cursive, &str);
+pub type OnSubmit = dyn Fn(&mut Cursive, &str) + Send + Sync;
 
 /// Input box where the user can enter and edit text.
 ///
@@ -52,9 +51,7 @@ pub type OnSubmit = dyn Fn(&mut Cursive, &str);
 ///         )
 ///         .button("Ok", |s| {
 ///             let name = s
-///                 .call_on_name("name", |view: &mut EditView| {
-///                     view.get_content()
-///                 })
+///                 .call_on_name("name", |view: &mut EditView| view.get_content())
 ///                 .unwrap();
 ///             show_popup(s, &name);
 ///         }),
@@ -66,17 +63,14 @@ pub type OnSubmit = dyn Fn(&mut Cursive, &str);
 ///     } else {
 ///         let content = format!("Hello {}!", name);
 ///         s.pop_layer();
-///         s.add_layer(
-///             Dialog::around(TextView::new(content))
-///                 .button("Quit", |s| s.quit()),
-///         );
+///         s.add_layer(Dialog::around(TextView::new(content)).button("Quit", |s| s.quit()));
 ///     }
 /// }
 /// ```
 pub struct EditView {
     /// Current content.
-    #[allow(clippy::rc_buffer)] // Rc::make_mut is what we want here.
-    content: Rc<String>,
+    #[allow(clippy::rc_buffer)] // Arc::make_mut is what we want here.
+    content: Arc<String>,
 
     /// Cursor position in the content, in bytes.
     cursor: usize,
@@ -97,10 +91,10 @@ pub struct EditView {
     /// Callback when the content is modified.
     ///
     /// Will be called with the current content and the cursor position.
-    on_edit: Option<Rc<OnEdit>>,
+    on_edit: Option<Arc<OnEdit>>,
 
-    /// Callback when <Enter> is pressed.
-    on_submit: Option<Rc<OnSubmit>>,
+    /// Callback when `<Enter>` is pressed.
+    on_submit: Option<Arc<OnSubmit>>,
 
     /// When `true`, only print `*` instead of the true content.
     secret: bool,
@@ -110,7 +104,9 @@ pub struct EditView {
 
     enabled: bool,
 
-    style: ColorStyle,
+    regular_style: StyleType,
+    inactive_style: StyleType,
+    cursor_style: StyleType,
 }
 
 new_default!(EditView);
@@ -121,7 +117,7 @@ impl EditView {
     /// Creates a new, empty edit view.
     pub fn new() -> Self {
         EditView {
-            content: Rc::new(String::new()),
+            content: Arc::new(String::new()),
             cursor: 0,
             offset: 0,
             last_length: 0, // scrollable: false,
@@ -131,7 +127,9 @@ impl EditView {
             secret: false,
             filler: "_".to_string(),
             enabled: true,
-            style: ColorStyle::secondary(),
+            regular_style: PaletteStyle::EditableText.into(),
+            inactive_style: PaletteStyle::EditableTextInactive.into(),
+            cursor_style: PaletteStyle::EditableTextCursor.into(),
         }
     }
 
@@ -196,8 +194,10 @@ impl EditView {
     /// When the view is enabled, the style will be reversed.
     ///
     /// Defaults to `ColorStyle::Secondary`.
-    pub fn set_style(&mut self, style: ColorStyle) {
-        self.style = style;
+    pub fn set_style<S: Into<StyleType>>(&mut self, style: S) {
+        let style = style.into();
+        self.regular_style = style;
+        // TODO: Also update cursor and inactive styles?
     }
 
     /// Sets the style used for this view.
@@ -206,7 +206,7 @@ impl EditView {
     ///
     /// Chainable variant.
     #[must_use]
-    pub fn style(self, style: ColorStyle) -> Self {
+    pub fn style<S: Into<StyleType>>(self, style: S) -> Self {
         self.with(|s| s.set_style(style))
     }
 
@@ -222,7 +222,7 @@ impl EditView {
     /// recursive calls, see [`set_on_edit`](#method.set_on_edit).
     pub fn set_on_edit_mut<F>(&mut self, callback: F)
     where
-        F: FnMut(&mut Cursive, &str, usize) + 'static,
+        F: FnMut(&mut Cursive, &str, usize) + 'static + Send + Sync,
     {
         self.set_on_edit(immut3!(callback));
     }
@@ -237,11 +237,12 @@ impl EditView {
     ///
     /// If you need a mutable closure and don't care about the recursive
     /// aspect, see [`set_on_edit_mut`](#method.set_on_edit_mut).
+    #[crate::callback_helpers]
     pub fn set_on_edit<F>(&mut self, callback: F)
     where
-        F: Fn(&mut Cursive, &str, usize) + 'static,
+        F: Fn(&mut Cursive, &str, usize) + 'static + Send + Sync,
     {
-        self.on_edit = Some(Rc::new(callback));
+        self.on_edit = Some(Arc::new(callback));
     }
 
     /// Sets a mutable callback to be called whenever the content is modified.
@@ -250,7 +251,7 @@ impl EditView {
     #[must_use]
     pub fn on_edit_mut<F>(self, callback: F) -> Self
     where
-        F: FnMut(&mut Cursive, &str, usize) + 'static,
+        F: FnMut(&mut Cursive, &str, usize) + 'static + Send + Sync,
     {
         self.with(|v| v.set_on_edit_mut(callback))
     }
@@ -274,7 +275,7 @@ impl EditView {
     #[must_use]
     pub fn on_edit<F>(self, callback: F) -> Self
     where
-        F: Fn(&mut Cursive, &str, usize) + 'static,
+        F: Fn(&mut Cursive, &str, usize) + 'static + Send + Sync,
     {
         self.with(|v| v.set_on_edit(callback))
     }
@@ -290,14 +291,14 @@ impl EditView {
     /// recursive calls, see [`set_on_submit`](#method.set_on_submit).
     pub fn set_on_submit_mut<F>(&mut self, callback: F)
     where
-        F: FnMut(&mut Cursive, &str) + 'static,
+        F: FnMut(&mut Cursive, &str) + 'static + Send + Sync,
     {
         // TODO: don't duplicate all those methods.
         // Instead, have some generic function immutify()
         // or something that wraps a FnMut closure.
-        let callback = RefCell::new(callback);
+        let callback = Mutex::new(callback);
         self.set_on_submit(move |s, text| {
-            if let Ok(mut f) = callback.try_borrow_mut() {
+            if let Ok(mut f) = callback.try_lock() {
                 (*f)(s, text);
             }
         });
@@ -312,11 +313,12 @@ impl EditView {
     ///
     /// If you need a mutable closure and don't care about the recursive
     /// aspect, see [`set_on_submit_mut`](#method.set_on_submit_mut).
+    #[crate::callback_helpers]
     pub fn set_on_submit<F>(&mut self, callback: F)
     where
-        F: Fn(&mut Cursive, &str) + 'static,
+        F: Fn(&mut Cursive, &str) + 'static + Send + Sync,
     {
-        self.on_submit = Some(Rc::new(callback));
+        self.on_submit = Some(Arc::new(callback));
     }
 
     /// Sets a mutable callback to be called when `<Enter>` is pressed.
@@ -325,7 +327,7 @@ impl EditView {
     #[must_use]
     pub fn on_submit_mut<F>(self, callback: F) -> Self
     where
-        F: FnMut(&mut Cursive, &str) + 'static,
+        F: FnMut(&mut Cursive, &str) + 'static + Send + Sync,
     {
         self.with(|v| v.set_on_submit_mut(callback))
     }
@@ -346,7 +348,7 @@ impl EditView {
     #[must_use]
     pub fn on_submit<F>(self, callback: F) -> Self
     where
-        F: Fn(&mut Cursive, &str) + 'static,
+        F: Fn(&mut Cursive, &str) + 'static + Send + Sync,
     {
         self.with(|v| v.set_on_submit(callback))
     }
@@ -360,7 +362,7 @@ impl EditView {
         let content = content.into();
         let len = content.len();
 
-        self.content = Rc::new(content);
+        self.content = Arc::new(content);
         self.offset = 0;
         self.set_cursor(len);
 
@@ -369,8 +371,8 @@ impl EditView {
 
     /// Get the current text.
     #[allow(clippy::rc_buffer)]
-    pub fn get_content(&self) -> Rc<String> {
-        Rc::clone(&self.content)
+    pub fn get_content(&self) -> Arc<String> {
+        Arc::clone(&self.content)
     }
 
     /// Sets the current content to the given value.
@@ -382,6 +384,11 @@ impl EditView {
     pub fn content<S: Into<String>>(mut self, content: S) -> Self {
         self.set_content(content);
         self
+    }
+
+    /// Returns the currest cursor position.
+    pub fn get_cursor(&self) -> usize {
+        self.cursor
     }
 
     /// Sets the cursor position.
@@ -413,7 +420,7 @@ impl EditView {
         // It means it'll just return a ref if no one else has a ref,
         // and it will clone it into `self.content` otherwise.
 
-        Rc::make_mut(&mut self.content).insert(self.cursor, ch);
+        Arc::make_mut(&mut self.content).insert(self.cursor, ch);
         self.cursor += ch.len_utf8();
 
         self.keep_cursor_in_view();
@@ -428,8 +435,8 @@ impl EditView {
     /// You should run this callback with a `&mut Cursive`.
     pub fn remove(&mut self, len: usize) -> Callback {
         let start = self.cursor;
-        let end = self.cursor + len;
-        for _ in Rc::make_mut(&mut self.content).drain(start..end) {}
+        let end = self.cursor + len.min(self.content.len() - self.cursor);
+        for _ in Arc::make_mut(&mut self.content).drain(start..end) {}
 
         self.keep_cursor_in_view();
 
@@ -438,8 +445,8 @@ impl EditView {
 
     fn make_edit_cb(&self) -> Option<Callback> {
         self.on_edit.clone().map(|cb| {
-            // Get a new Rc on the content
-            let content = Rc::clone(&self.content);
+            // Get a new Arc on the content
+            let content = Arc::clone(&self.content);
             let cursor = self.cursor;
 
             Callback::from_fn(move |s| {
@@ -475,11 +482,8 @@ impl EditView {
             // Look at the content before the cursor (we will print its tail).
             // From the end, count the length until we reach `available`.
             // Then sum the byte lengths.
-            let suffix_length = simple_suffix(
-                &self.content[self.offset..self.cursor],
-                available,
-            )
-            .length;
+            let suffix_length =
+                simple_suffix(&self.content[self.offset..self.cursor], available).length;
 
             assert!(suffix_length <= self.cursor);
             self.offset = self.cursor - suffix_length;
@@ -490,8 +494,7 @@ impl EditView {
         // If we have too much space
         if self.content[self.offset..].width() < self.last_length {
             assert!(self.last_length >= 1);
-            let suffix_length =
-                simple_suffix(&self.content, self.last_length - 1).length;
+            let suffix_length = simple_suffix(&self.content, self.last_length - 1).length;
 
             assert!(self.content.len() >= suffix_length);
             self.offset = self.content.len() - suffix_length;
@@ -505,6 +508,11 @@ impl EditView {
 /// Best used for single character replacement.
 fn make_small_stars(length: usize) -> &'static str {
     // TODO: be able to use any character as hidden mode?
+    assert!(
+        length <= 4,
+        "Can only generate stars for one grapheme at a time."
+    );
+
     &"****"[..length]
 }
 
@@ -516,100 +524,88 @@ impl View for EditView {
             self.last_length, printer.size.x
         );
 
+        let (style, cursor_style) = if self.enabled && printer.enabled {
+            (self.regular_style, self.cursor_style)
+        } else {
+            (self.inactive_style, self.inactive_style)
+        };
+
         let width = self.content.width();
-        printer.with_color(self.style, |printer| {
-            let effect = if self.enabled && printer.enabled {
-                Effect::Reverse
-            } else {
-                Effect::Simple
-            };
-            printer.with_effect(effect, |printer| {
-                if width < self.last_length {
-                    // No problem, everything fits.
-                    assert!(printer.size.x >= width);
-                    if self.secret {
-                        printer.print_hline((0, 0), width, "*");
-                    } else {
-                        printer.print((0, 0), &self.content);
-                    }
-                    let filler_len =
-                        (printer.size.x - width) / self.filler.width();
-                    printer.print_hline(
-                        (width, 0),
-                        filler_len,
-                        self.filler.as_str(),
-                    );
+        printer.with_style(style, |printer| {
+            if width < self.last_length {
+                // No problem, everything fits.
+                assert!(printer.size.x >= width);
+                if self.secret {
+                    printer.print_hline((0, 0), width, "*");
                 } else {
-                    let content = &self.content[self.offset..];
-                    let display_bytes = content
-                        .graphemes(true)
-                        .scan(0, |w, g| {
-                            *w += g.width();
-                            if *w > self.last_length {
-                                None
-                            } else {
-                                Some(g)
-                            }
-                        })
-                        .map(str::len)
-                        .sum();
-
-                    let content = &content[..display_bytes];
-                    let width = content.width();
-
-                    if self.secret {
-                        printer.print_hline((0, 0), width, "*");
-                    } else {
-                        printer.print((0, 0), content);
-                    }
-
-                    if width < self.last_length {
-                        let filler_len =
-                            (self.last_length - width) / self.filler.width();
-                        printer.print_hline(
-                            (width, 0),
-                            filler_len,
-                            self.filler.as_str(),
-                        );
-                    }
+                    printer.print((0, 0), &self.content);
                 }
-            });
+                let filler_len = (printer.size.x - width) / self.filler.width();
+                printer.print_hline((width, 0), filler_len, self.filler.as_str());
+            } else {
+                let content = &self.content[self.offset..];
+                let display_bytes = content
+                    .graphemes(true)
+                    .scan(0, |w, g| {
+                        *w += g.width();
+                        if *w > self.last_length {
+                            None
+                        } else {
+                            Some(g)
+                        }
+                    })
+                    .map(str::len)
+                    .sum();
 
-            // Now print cursor
-            if printer.focused {
-                let c: &str = if self.cursor == self.content.len() {
-                    &self.filler
+                let content = &content[..display_bytes];
+                let width = content.width();
+
+                if self.secret {
+                    printer.print_hline((0, 0), width, "*");
                 } else {
-                    // Get the char from the string... Is it so hard?
-                    let selected = self.content[self.cursor..]
-                        .graphemes(true)
-                        .next()
-                        .unwrap_or_else(|| {
-                            panic!(
-                                "Found no char at cursor {} in {}",
-                                self.cursor, &self.content
-                            )
-                        });
-                    if self.secret {
-                        make_small_stars(selected.width())
-                    } else {
-                        selected
-                    }
-                };
-                let offset = self.content[self.offset..self.cursor].width();
-                printer.print((offset, 0), c);
+                    printer.print((0, 0), content);
+                }
+
+                if width < self.last_length {
+                    let filler_len = (self.last_length - width) / self.filler.width();
+                    printer.print_hline((width, 0), filler_len, self.filler.as_str());
+                }
             }
         });
+
+        // Now print cursor
+        if printer.focused {
+            let c: &str = if self.cursor == self.content.len() {
+                &self.filler
+            } else {
+                // Get the char from the string... Is it so hard?
+                let selected = self.content[self.cursor..]
+                    .graphemes(true)
+                    .next()
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "Found no char at cursor {} in {}",
+                            self.cursor, &self.content
+                        )
+                    });
+                if self.secret {
+                    make_small_stars(selected.width())
+                } else {
+                    selected
+                }
+            };
+            let offset = self.content[self.offset..self.cursor].width();
+            printer.with_style(cursor_style, |printer| {
+                printer.print((offset, 0), c);
+            });
+        }
     }
 
     fn layout(&mut self, size: Vec2) {
         self.last_length = size.x;
     }
 
-    fn take_focus(
-        &mut self,
-        _: Direction,
-    ) -> Result<EventResult, CannotFocus> {
+    fn take_focus(&mut self, _: Direction) -> Result<EventResult, CannotFocus> {
         self.enabled.then(EventResult::consumed).ok_or(CannotFocus)
     }
 
@@ -621,14 +617,25 @@ impl View for EditView {
             Event::Char(ch) => {
                 return EventResult::Consumed(Some(self.insert(ch)));
             }
-            // TODO: handle ctrl-key?
-            Event::Key(Key::Home) => self.set_cursor(0),
-            Event::Key(Key::End) => {
+            Event::CtrlChar('u') => {
+                // kill-to-front
+                let content = self.content[self.cursor..].to_owned();
+                let callback = self.set_content(content);
+                self.set_cursor(0);
+                return EventResult::Consumed(Some(callback));
+            }
+            Event::CtrlChar('k') => {
+                // kill-to-end
+                let content = self.content[..self.cursor].to_owned();
+                return EventResult::Consumed(Some(self.set_content(content)));
+            }
+            Event::Key(Key::Home) | Event::CtrlChar('a') => self.set_cursor(0),
+            Event::Key(Key::End) | Event::CtrlChar('e') => {
                 // When possible, NLL to the rescue!
                 let len = self.content.len();
                 self.set_cursor(len);
             }
-            Event::Key(Key::Left) if self.cursor > 0 => {
+            Event::Key(Key::Left) | Event::CtrlChar('b') if self.cursor > 0 => {
                 let len = self.content[..self.cursor]
                     .graphemes(true)
                     .last()
@@ -637,7 +644,7 @@ impl View for EditView {
                 let cursor = self.cursor - len;
                 self.set_cursor(cursor);
             }
-            Event::Key(Key::Right) if self.cursor < self.content.len() => {
+            Event::Key(Key::Right) | Event::CtrlChar('f') if self.cursor < self.content.len() => {
                 let len = self.content[self.cursor..]
                     .graphemes(true)
                     .next()
@@ -665,7 +672,7 @@ impl View for EditView {
             }
             Event::Key(Key::Enter) if self.on_submit.is_some() => {
                 let cb = self.on_submit.clone().unwrap();
-                let content = Rc::clone(&self.content);
+                let content = Arc::clone(&self.content);
                 return EventResult::with_cb(move |s| {
                     cb(s, &content);
                 });
@@ -677,11 +684,7 @@ impl View for EditView {
             } if position.fits_in_rect(offset, (self.last_length, 1)) => {
                 if let Some(position) = position.checked_sub(offset) {
                     self.cursor = self.offset
-                        + simple_prefix(
-                            &self.content[self.offset..],
-                            position.x,
-                        )
-                        .length;
+                        + simple_prefix(&self.content[self.offset..], position.x).length;
                 }
             }
             _ => return EventResult::Ignored,
@@ -708,5 +711,103 @@ impl View for EditView {
         let x = self.content[..self.cursor].width();
 
         Rect::from_size((x, 0), (char_width, 1))
+    }
+}
+
+#[crate::blueprint(EditView::new())]
+struct Blueprint {
+    content: Option<String>,
+
+    on_edit: Option<_>,
+
+    on_submit: Option<_>,
+}
+
+// The above blueprint would expand to:
+/*
+crate::manual_blueprint!(EditView, |config, context| {
+    let mut edit_view = EditView::new();
+
+    if let Some(content) = config.get("content") {
+        edit_view.set_content(context.resolve::<String>(content)?);
+    }
+
+    if let Some(on_edit) = config.get("on_edit") {
+        edit_view.set_on_edit_cb(context.resolve(on_edit)?);
+    }
+
+    if let Some(on_submit) = config.get("on_submit") {
+        edit_view.set_on_submit_cb(context.resolve(on_submit)?);
+    }
+
+    Ok(edit_view)
+});
+*/
+
+crate::fn_blueprint!("EditView.with_content", |config, context| {
+    let name: String = context.resolve(&config["name"])?;
+
+    // We won't resolve the callback just yet.
+    // Instead, store it and resolve it later, when we run the callback.
+    let callback = config["callback"].clone();
+    let context = context.clone();
+
+    let result: Arc<dyn Fn(&mut Cursive) + Send + Sync> = Arc::new(move |s| {
+        let content: String = s
+            .call_on_name(&name, |view: &mut EditView| view.get_content())
+            .unwrap()
+            .as_ref()
+            .clone();
+
+        let context = context.sub_context(|c| {
+            c.store("content", content);
+        });
+
+        // Hopefully resolving this config as callback is what will pull the
+        // "content" variable we just set.
+        let callback: Arc<dyn Fn(&mut Cursive) + Send + Sync> = match context.resolve(&callback) {
+            Ok(callback) => callback,
+            Err(err) => {
+                log::error!("Could not resolve callback: {err:?}");
+                return;
+            }
+        };
+
+        (*callback)(s);
+    });
+
+    Ok(result)
+});
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ctrl_key_events() {
+        let mut view = EditView::new().content("foobarbaz");
+        view.set_cursor(0);
+
+        view.on_event(Event::CtrlChar('f'));
+        assert_eq!(view.get_cursor(), 1);
+
+        view.on_event(Event::CtrlChar('b'));
+        assert_eq!(view.get_cursor(), 0);
+
+        view.on_event(Event::CtrlChar('e'));
+        assert_eq!(view.get_cursor(), view.get_content().len());
+
+        view.on_event(Event::CtrlChar('a'));
+        assert_eq!(view.get_cursor(), 0);
+
+        view.set_cursor(3);
+        view.on_event(Event::CtrlChar('u'));
+        assert_eq!(view.get_cursor(), 0);
+        assert_eq!(*view.get_content(), "barbaz");
+
+        view.set_cursor(3);
+        view.on_event(Event::CtrlChar('k'));
+        assert_eq!(view.get_cursor(), 3);
+        assert_eq!(*view.get_content(), "bar");
     }
 }

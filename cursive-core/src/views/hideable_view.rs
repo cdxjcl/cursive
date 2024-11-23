@@ -100,11 +100,7 @@ impl<V: View> ViewWrapper for HideableView<V> {
         }
     }
 
-    fn wrap_call_on_any<'a>(
-        &mut self,
-        selector: &Selector<'_>,
-        callback: AnyCb<'a>,
-    ) {
+    fn wrap_call_on_any(&mut self, selector: &Selector, callback: AnyCb) {
         // We always run callbacks, even when invisible.
         self.view.call_on_any(selector, callback)
     }
@@ -126,3 +122,15 @@ impl<V: View> ViewWrapper for HideableView<V> {
         self.invalidated || (self.visible && self.view.needs_relayout())
     }
 }
+
+#[crate::blueprint(HideableView::new(view))]
+struct Blueprint {
+    view: crate::views::BoxedView,
+    visible: Option<bool>,
+}
+
+crate::manual_blueprint!(with hideable, |config, context| {
+    let visible: Option<bool> = context.resolve(&config["visible"])?;
+
+    Ok(move |view| HideableView::new(view).visible(visible.unwrap_or(true)))
+});

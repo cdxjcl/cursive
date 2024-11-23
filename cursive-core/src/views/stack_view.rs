@@ -1,15 +1,18 @@
+//! Helpers for `StackView`.
+//!
+//! This defines `LayerConfig` and a couple of struct that implement `Into<LayerConfig>`.
+//!
+//! To be used with `StackView::add_layer`.
 use crate::{
     direction::Direction,
     event::{AnyCb, Event, EventResult},
-    theme::ColorStyle,
+    style::PaletteStyle,
     view::{
-        CannotFocus, IntoBoxedView, Offset, Position, Selector, View,
-        ViewNotFound, ViewWrapper,
+        CannotFocus, IntoBoxedView, Offset, Position, Selector, View, ViewNotFound, ViewWrapper,
     },
     views::{BoxedView, CircularFocus, Layer, ShadowView},
     Printer, Vec2, With,
 };
-use std::cell;
 use std::ops::Deref;
 
 /// Simple stack of views.
@@ -20,7 +23,111 @@ pub struct StackView {
     last_size: Vec2,
     // Flag indicates if undrawn areas of the background are exposed
     // and therefore need redrawing.
-    bg_dirty: cell::Cell<bool>,
+    // TODO: this is broken! Transparent views could change their content and lead to weirdness.
+    // Instead, just rely on buffered backend.
+    bg_dirty: std::sync::atomic::AtomicBool,
+}
+
+// This is a poor man's optional parameter, or kinda builder pattern.
+// We can give either `view`, or `Modeless(view)`, or `LayerAt(position, NoShadow(view))`.
+
+/// Configuration for a layer in a `StackView`.
+pub struct LayerConfig<V> {
+    view: V,
+    modal: bool,
+    placement: Placement,
+    wrapper: WrapperType,
+}
+
+/// Make the layer non-modal.
+///
+/// If this layer ignores events, it will go to the layer behind it.
+pub struct Modeless<T>(pub T);
+
+/// Make a layer full-screen.
+///
+/// You probably _also_ want to make the layer `NoShadow`, or even `Transparent`.
+pub struct Fullscreen<T>(pub T);
+
+/// Make the layer not include a shadow.
+pub struct NoShadow<T>(pub T);
+
+/// Make the layer transparent.
+///
+/// No background will be filled.
+///
+/// This implicitly also removes shadows.
+pub struct Transparent<T>(pub T);
+
+/// Place the layer at the given position.
+pub struct LayerAt<T>(pub Position, pub T);
+
+impl<T, V> From<Transparent<T>> for LayerConfig<V>
+where
+    T: Into<LayerConfig<V>>,
+{
+    fn from(other: Transparent<T>) -> Self {
+        other.0.into().with(|config| {
+            config.wrapper = WrapperType::Plain;
+        })
+    }
+}
+
+impl<T, V> From<NoShadow<T>> for LayerConfig<V>
+where
+    T: Into<LayerConfig<V>>,
+{
+    fn from(other: NoShadow<T>) -> Self {
+        other.0.into().with(|config| {
+            if let WrapperType::Shadow = config.wrapper {
+                // We don't want to undo a transparent specifier.
+                config.wrapper = WrapperType::Backfilled;
+            }
+        })
+    }
+}
+
+impl<T, V> From<Fullscreen<T>> for LayerConfig<V>
+where
+    T: Into<LayerConfig<V>>,
+{
+    fn from(other: Fullscreen<T>) -> Self {
+        other.0.into().with(|config| {
+            config.placement = Placement::Fullscreen;
+        })
+    }
+}
+
+impl<T, V> From<LayerAt<T>> for LayerConfig<V>
+where
+    T: Into<LayerConfig<V>>,
+{
+    fn from(other: LayerAt<T>) -> Self {
+        other.1.into().with(|config| {
+            config.placement = Placement::Floating(other.0);
+        })
+    }
+}
+
+impl<T, V> From<Modeless<T>> for LayerConfig<V>
+where
+    T: Into<LayerConfig<V>>,
+{
+    fn from(other: Modeless<T>) -> Self {
+        other.0.into().with(|config| config.modal = false)
+    }
+}
+
+// We need the IntoBoxedView trait to guarantee we don't overlap with the other impl
+impl<V: IntoBoxedView> From<V> for LayerConfig<V> {
+    fn from(view: V) -> Self {
+        LayerConfig {
+            view,
+            modal: true,
+            placement: Placement::Floating(Position::center()),
+            wrapper: WrapperType::Shadow,
+        }
+    }
 }
 
 /// Where should the view be on the screen (per dimension).
@@ -42,21 +149,14 @@ pub enum LayerPosition {
 }
 
 impl Placement {
-    pub fn compute_offset<S, A, P>(
-        &self,
-        size: S,
-        available: A,
-        parent: P,
-    ) -> Vec2
+    pub fn compute_offset<S, A, P>(&self, size: S, available: A, parent: P) -> Vec2
     where
         S: Into<Vec2>,
         A: Into<Vec2>,
         P: Into<Vec2>,
     {
         match *self {
-            Placement::Floating(ref position) => {
-                position.compute_offset(size, available, parent)
-            }
+            Placement::Floating(ref position) => position.compute_offset(size, available, parent),
             Placement::Fullscreen => Vec2::zero(),
         }
     }
@@ -65,39 +165,46 @@ impl Placement {
 /// A child view can be wrapped in multiple ways.
 enum ChildWrapper<T: View> {
     // Some views include a shadow around.
-    Shadow(ShadowView<Layer<CircularFocus<T>>>),
+    Shadow(ShadowView<Layer<T>>),
 
     // Some include only include a background.
-    Backfilled(Layer<CircularFocus<T>>),
+    Backfilled(Layer<T>),
 
     // Some views don't even have a background (they'll be transparent).
-    Plain(CircularFocus<T>),
+    Plain(T),
+}
+
+enum WrapperType {
+    Shadow,
+    Backfilled,
+    Plain,
+}
+
+impl WrapperType {
+    pub fn wrap<V: ViewWrapper>(self, view: V, padding: crate::XY<bool>) -> ChildWrapper<V> {
+        match self {
+            Self::Shadow => ChildWrapper::Shadow(
+                ShadowView::new(Layer::new(view))
+                    .top_padding(padding.y)
+                    .left_padding(padding.x),
+            ),
+            Self::Backfilled => ChildWrapper::Backfilled(Layer::new(view)),
+            Self::Plain => ChildWrapper::Plain(view),
+        }
+    }
 }
 
 impl<T: View> ChildWrapper<T> {
-    fn unwrap(self) -> T {
+    fn into_inner(self) -> T {
         match self {
             // All these into_inner() can never fail.
             // (ShadowView, Layer, CircularFocus)
-            ChildWrapper::Shadow(shadow) => shadow
-                .into_inner()
-                .ok()
-                .unwrap()
-                .into_inner()
-                .ok()
-                .unwrap()
-                .into_inner()
-                .ok()
-                .unwrap(),
+            ChildWrapper::Shadow(shadow) => {
+                shadow.into_inner().ok().unwrap().into_inner().ok().unwrap()
+            }
             // Layer::into_inner can never fail.
-            ChildWrapper::Backfilled(background) => background
-                .into_inner()
-                .ok()
-                .unwrap()
-                .into_inner()
-                .ok()
-                .unwrap(),
-            ChildWrapper::Plain(layer) => layer.into_inner().ok().unwrap(),
+            ChildWrapper::Backfilled(background) => background.into_inner().ok().unwrap(),
+            ChildWrapper::Plain(layer) => layer,
         }
     }
 }
@@ -106,26 +213,18 @@ impl<T: View> ChildWrapper<T> {
     /// Returns a reference to the inner view
     pub fn get_inner(&self) -> &T {
         match *self {
-            ChildWrapper::Shadow(ref shadow) => {
-                shadow.get_inner().get_inner().get_inner()
-            }
-            ChildWrapper::Backfilled(ref background) => {
-                background.get_inner().get_inner()
-            }
-            ChildWrapper::Plain(ref layer) => layer.get_inner(),
+            ChildWrapper::Shadow(ref shadow) => shadow.get_inner().get_inner(),
+            ChildWrapper::Backfilled(ref background) => background.get_inner(),
+            ChildWrapper::Plain(ref layer) => layer,
         }
     }
 
     /// Returns a mutable reference to the inner view
     pub fn get_inner_mut(&mut self) -> &mut T {
         match *self {
-            ChildWrapper::Shadow(ref mut shadow) => {
-                shadow.get_inner_mut().get_inner_mut().get_inner_mut()
-            }
-            ChildWrapper::Backfilled(ref mut background) => {
-                background.get_inner_mut().get_inner_mut()
-            }
-            ChildWrapper::Plain(ref mut layer) => layer.get_inner_mut(),
+            ChildWrapper::Shadow(ref mut shadow) => shadow.get_inner_mut().get_inner_mut(),
+            ChildWrapper::Backfilled(ref mut background) => background.get_inner_mut(),
+            ChildWrapper::Plain(ref mut layer) => layer,
         }
     }
 }
@@ -164,10 +263,7 @@ impl<T: View> View for ChildWrapper<T> {
         }
     }
 
-    fn take_focus(
-        &mut self,
-        source: Direction,
-    ) -> Result<EventResult, CannotFocus> {
+    fn take_focus(&mut self, source: Direction) -> Result<EventResult, CannotFocus> {
         match *self {
             ChildWrapper::Shadow(ref mut v) => v.take_focus(source),
             ChildWrapper::Backfilled(ref mut v) => v.take_focus(source),
@@ -175,28 +271,15 @@ impl<T: View> View for ChildWrapper<T> {
         }
     }
 
-    fn call_on_any<'a>(
-        &mut self,
-        selector: &Selector<'_>,
-        callback: AnyCb<'a>,
-    ) {
+    fn call_on_any(&mut self, selector: &Selector, callback: AnyCb) {
         match *self {
-            ChildWrapper::Shadow(ref mut v) => {
-                v.call_on_any(selector, callback)
-            }
-            ChildWrapper::Backfilled(ref mut v) => {
-                v.call_on_any(selector, callback)
-            }
-            ChildWrapper::Plain(ref mut v) => {
-                v.call_on_any(selector, callback)
-            }
+            ChildWrapper::Shadow(ref mut v) => v.call_on_any(selector, callback),
+            ChildWrapper::Backfilled(ref mut v) => v.call_on_any(selector, callback),
+            ChildWrapper::Plain(ref mut v) => v.call_on_any(selector, callback),
         }
     }
 
-    fn focus_view(
-        &mut self,
-        selector: &Selector<'_>,
-    ) -> Result<EventResult, ViewNotFound> {
+    fn focus_view(&mut self, selector: &Selector) -> Result<EventResult, ViewNotFound> {
         match *self {
             ChildWrapper::Shadow(ref mut v) => v.focus_view(selector),
             ChildWrapper::Backfilled(ref mut v) => v.focus_view(selector),
@@ -206,9 +289,10 @@ impl<T: View> View for ChildWrapper<T> {
 }
 
 struct Child {
-    view: ChildWrapper<BoxedView>,
+    view: CircularFocus<ChildWrapper<BoxedView>>,
     size: Vec2,
     placement: Placement,
+    modal: bool,
 
     // We cannot call `take_focus` until we've called `layout()`
     // (for instance, a textView must know it will scroll to be focusable).
@@ -225,7 +309,7 @@ impl StackView {
         StackView {
             layers: Vec::new(),
             last_size: Vec2::zero(),
-            bg_dirty: cell::Cell::new(true),
+            bg_dirty: std::sync::atomic::AtomicBool::new(true),
         }
     }
 
@@ -253,36 +337,54 @@ impl StackView {
     /// Adds a new full-screen layer on top of the stack.
     ///
     /// Fullscreen layers have no shadow.
+    ///
+    /// Soon deprecated in favor of `add_layer(Fullscreen(view))`.
     pub fn add_fullscreen_layer<T>(&mut self, view: T)
     where
         T: IntoBoxedView,
     {
-        let boxed = BoxedView::boxed(view);
-        self.layers.push(Child {
-            view: ChildWrapper::Backfilled(Layer::new(
-                CircularFocus::new(boxed).wrap_tab(),
-            )),
-            size: Vec2::zero(),
-            placement: Placement::Fullscreen,
-            virgin: true,
-        });
+        self.add_layer(NoShadow(Fullscreen(view)));
     }
 
     /// Adds new view on top of the stack in the center of the screen.
-    pub fn add_layer<T>(&mut self, view: T)
+    pub fn add_layer<T, V>(&mut self, view: T)
     where
-        T: IntoBoxedView,
+        T: Into<LayerConfig<V>>,
+        V: IntoBoxedView,
     {
-        self.add_layer_at(Position::center(), view);
+        let LayerConfig {
+            view,
+            modal,
+            placement,
+            wrapper,
+        } = view.into();
+
+        let position = match placement {
+            Placement::Floating(position) => position,
+            _ => Position::center(),
+        };
+
+        let view = BoxedView::boxed(view.into_boxed_view());
+        let view = wrapper.wrap(view, position.map(|x| x == Offset::Center));
+        let view = CircularFocus::new(view).wrap_tab();
+
+        self.layers.push(Child {
+            view,
+            modal,
+            placement,
+            size: Vec2::zero(),
+            virgin: true,
+        });
     }
 
     /// Adds new view on top of the stack in the center of the screen.
     ///
     /// Chainable variant.
     #[must_use]
-    pub fn layer<T>(self, view: T) -> Self
+    pub fn layer<T, V>(self, view: T) -> Self
     where
-        T: IntoBoxedView,
+        T: Into<LayerConfig<V>>,
+        V: IntoBoxedView,
     {
         self.with(|s| s.add_layer(view))
     }
@@ -290,7 +392,9 @@ impl StackView {
     /// Returns a reference to the layer at the given position.
     pub fn get(&self, pos: LayerPosition) -> Option<&dyn View> {
         self.get_index(pos).and_then(|i| {
-            self.layers.get(i).map(|child| &**child.view.get_inner())
+            self.layers
+                .get(i)
+                .map(|child| &**child.view.get_inner().get_inner())
         })
     }
 
@@ -299,7 +403,7 @@ impl StackView {
         self.get_index(pos).and_then(move |i| {
             self.layers
                 .get_mut(i)
-                .map(|child| &mut **child.view.get_inner_mut())
+                .map(|child| &mut **child.view.get_inner_mut().get_inner_mut())
         })
     }
 
@@ -323,7 +427,10 @@ impl StackView {
     /// stack.add_layer(Dialog::around(TextView::new("Middle").with_name("text")));
     /// stack.add_layer(TextView::new("Front"));
     ///
-    /// assert_eq!(stack.find_layer_from_name("text"), Some(LayerPosition::FromBack(1)));
+    /// assert_eq!(
+    ///     stack.find_layer_from_name("text"),
+    ///     Some(LayerPosition::FromBack(1))
+    /// );
     /// ```
     pub fn find_layer_from_name(&mut self, id: &str) -> Option<LayerPosition> {
         let selector = Selector::Name(id);
@@ -362,27 +469,18 @@ impl StackView {
     }
 
     /// Adds a view on top of the stack.
+    ///
+    /// Soon deprecated in favor of `add_layer(LayerAt(position, view))`.
     pub fn add_layer_at<T>(&mut self, position: Position, view: T)
     where
         T: IntoBoxedView,
     {
-        let boxed = BoxedView::boxed(view);
-        self.layers.push(Child {
-            // Skip padding for absolute/parent-placed views
-            view: ChildWrapper::Shadow(
-                ShadowView::new(Layer::new(
-                    CircularFocus::new(boxed).wrap_tab(),
-                ))
-                .top_padding(position.y == Offset::Center)
-                .left_padding(position.x == Offset::Center),
-            ),
-            size: Vec2::new(0, 0),
-            placement: Placement::Floating(position),
-            virgin: true,
-        });
+        self.add_layer(LayerAt(position, view));
     }
 
     /// Adds a transparent view on top of the stack in the center of the screen.
+    ///
+    /// Soon deprecated in favor of `add_layer(Transparent(view))`.
     pub fn add_transparent_layer<T>(&mut self, view: T)
     where
         T: IntoBoxedView,
@@ -395,13 +493,7 @@ impl StackView {
     where
         T: IntoBoxedView,
     {
-        let boxed = BoxedView::boxed(view);
-        self.layers.push(Child {
-            view: ChildWrapper::Plain(CircularFocus::new(boxed).wrap_tab()),
-            size: Vec2::new(0, 0),
-            placement: Placement::Floating(position),
-            virgin: true,
-        });
+        self.add_layer(LayerAt(position, Transparent(view)));
     }
 
     /// Adds a view on top of the stack at the given position.
@@ -421,17 +513,42 @@ impl StackView {
     ///
     /// If the given position is out of bounds.
     pub fn remove_layer(&mut self, position: LayerPosition) -> Box<dyn View> {
+        self.set_dirty();
         let i = self.get_index(position).unwrap();
-        self.layers.remove(i).view.unwrap().unwrap()
+        self.layers
+            .remove(i)
+            .view
+            .into_inner()
+            .ok()
+            .unwrap()
+            .into_inner()
+            .unwrap()
+    }
+
+    fn set_dirty(&self) {
+        self.bg_dirty
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn undirty(&self) {
+        self.bg_dirty
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn is_dirty(&self) -> bool {
+        self.bg_dirty.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Remove the top-most layer.
     pub fn pop_layer(&mut self) -> Option<Box<dyn View>> {
-        self.bg_dirty.set(true);
+        self.set_dirty();
         self.layers
             .pop()
             .map(|child| child.view)
-            .map(ChildWrapper::unwrap)
+            .map(CircularFocus::into_inner)
+            .map(Result::ok)
+            .map(Option::unwrap)
+            .map(ChildWrapper::into_inner)
             .map(BoxedView::unwrap)
     }
 
@@ -454,10 +571,7 @@ impl StackView {
     }
 
     /// Computes the offset of the current top view.
-    #[deprecated(
-        since = "0.17.0",
-        note = "Use StackView::layer_offset instead."
-    )]
+    #[deprecated(since = "0.17.0", note = "Use StackView::layer_offset instead.")]
     pub fn offset(&self) -> Vec2 {
         self.layer_offsets().last().unwrap_or_else(Vec2::zero)
     }
@@ -470,9 +584,7 @@ impl StackView {
     fn get_index(&self, pos: LayerPosition) -> Option<usize> {
         match pos {
             LayerPosition::FromBack(i) => Some(i),
-            LayerPosition::FromFront(i) => {
-                self.layers.len().checked_sub(i + 1)
-            }
+            LayerPosition::FromFront(i) => self.layers.len().checked_sub(i + 1),
         }
     }
 
@@ -516,54 +628,56 @@ impl StackView {
     /// # Panics
     ///
     /// If `layer` is out of bounds.
-    pub fn reposition_layer(
-        &mut self,
-        layer: LayerPosition,
-        position: Position,
-    ) {
+    pub fn reposition_layer(&mut self, layer: LayerPosition, position: Position) {
         let i = self.get_index(layer).unwrap();
         let child = &mut self.layers[i];
         match child.placement {
             Placement::Floating(_) => {
                 child.placement = Placement::Floating(position);
-                self.bg_dirty.set(true);
+                self.set_dirty();
             }
             Placement::Fullscreen => (),
         }
     }
 
+    /// Make the given layer (non-)modal.
+    pub fn set_modal(&mut self, layer: LayerPosition, modal: bool) {
+        let i = self.get_index(layer).unwrap();
+        let child = &mut self.layers[i];
+        child.modal = modal;
+    }
+
     /// Background drawing
     ///
-    /// Drawing functions are split into forground and background to
+    /// Drawing functions are split into foreground and background to
     /// ease inserting layers under the stackview but above its background.
     ///
-    /// you probably just want to call draw()
+    /// You probably just want to call draw()
     pub fn draw_bg(&self, printer: &Printer) {
         // If the background is dirty draw a new background
-        if self.bg_dirty.get() {
+        if self.is_dirty() {
             for y in 0..printer.size.y {
-                printer.with_color(ColorStyle::background(), |printer| {
+                printer.with_style(PaletteStyle::Background, |printer| {
                     printer.print_hline((0, y), printer.size.x, " ");
                 });
             }
 
             // set background as clean, so we don't need to do this every frame
-            self.bg_dirty.set(false);
+            self.undirty();
         }
     }
 
-    /// Forground drawing
+    /// Foreground drawing
     ///
-    /// Drawing functions are split into forground and background to
+    /// Drawing functions are split into foreground and background to
     /// ease inserting layers under the stackview but above its background.
     ///
-    /// You probably just want to call draw()
+    /// you probably just want to call draw()
     pub fn draw_fg(&self, printer: &Printer) {
         let last = self.layers.len();
-        printer.with_color(ColorStyle::primary(), |printer| {
+        printer.with_style(PaletteStyle::Background, |printer| {
             for (i, (v, offset)) in
-                StackPositionIterator::new(self.layers.iter(), printer.size)
-                    .enumerate()
+                StackPositionIterator::new(self.layers.iter(), printer.size).enumerate()
             {
                 v.view.draw(
                     &printer
@@ -608,11 +722,9 @@ where
 
     fn next(&mut self) -> Option<(I::Item, Vec2)> {
         self.inner.next().map(|v| {
-            let offset = v.placement.compute_offset(
-                v.size,
-                self.total_size,
-                self.previous,
-            );
+            let offset = v
+                .placement
+                .compute_offset(v.size, self.total_size, self.previous);
 
             self.previous = offset;
 
@@ -625,7 +737,7 @@ where
 impl View for StackView {
     fn draw(&self, printer: &Printer) {
         // This function is included for compat with the view trait,
-        // it should behave the same as calling them seperately, but does
+        // it should behave the same as calling them separately, but does
         // not pause to let you insert in between the layers.
         self.draw_bg(printer);
         self.draw_fg(printer);
@@ -633,19 +745,28 @@ impl View for StackView {
 
     fn on_event(&mut self, event: Event) -> EventResult {
         if event == Event::WindowResize {
-            self.bg_dirty.set(true);
+            self.set_dirty();
         }
+
         // Use the stack position iterator to get the offset of the top layer.
         // TODO: save it instead when drawing?
-        match StackPositionIterator::new(
-            self.layers.iter_mut(),
-            self.last_size,
-        )
-        .last()
-        {
-            None => EventResult::Ignored,
-            Some((v, offset)) => v.view.on_event(event.relativized(offset)),
+        let stack_positions: Vec<_> =
+            StackPositionIterator::new(self.layers.iter_mut(), self.last_size).collect();
+
+        // Start from the end of the stack (the front-most layer).
+        for (v, offset) in stack_positions.into_iter().rev() {
+            // Pop up the first view that consumes the event.
+            if let event @ EventResult::Consumed(_) = v.view.on_event(event.relativized(offset)) {
+                return event;
+            }
+
+            // Stop at the first modal view.
+            if v.modal {
+                break;
+            }
         }
+
+        EventResult::Ignored
     }
 
     fn layout(&mut self, size: Vec2) {
@@ -683,30 +804,20 @@ impl View for StackView {
             .fold(Vec2::new(1, 1), Vec2::max)
     }
 
-    fn take_focus(
-        &mut self,
-        source: Direction,
-    ) -> Result<EventResult, CannotFocus> {
+    fn take_focus(&mut self, source: Direction) -> Result<EventResult, CannotFocus> {
         match self.layers.last_mut() {
             None => Err(CannotFocus),
             Some(v) => v.view.take_focus(source),
         }
     }
 
-    fn call_on_any<'a>(
-        &mut self,
-        selector: &Selector<'_>,
-        callback: AnyCb<'a>,
-    ) {
+    fn call_on_any(&mut self, selector: &Selector, callback: AnyCb) {
         for layer in &mut self.layers {
             layer.view.call_on_any(selector, callback);
         }
     }
 
-    fn focus_view(
-        &mut self,
-        selector: &Selector<'_>,
-    ) -> Result<EventResult, ViewNotFound> {
+    fn focus_view(&mut self, selector: &Selector) -> Result<EventResult, ViewNotFound> {
         for layer in &mut self.layers {
             if layer.view.focus_view(selector).is_ok() {
                 return Ok(EventResult::Consumed(None));
@@ -727,7 +838,7 @@ mod tests {
         // Start with a simple stack
         let mut stack = StackView::new().layer(TextView::new("1"));
 
-        // And keep poping and re-pushing the view
+        // And keep popping and re-pushing the view
         for _ in 0..20 {
             let layer = stack.pop_layer().unwrap();
             stack.add_layer(layer);
@@ -751,21 +862,12 @@ mod tests {
         // Try moving views around, make sure we have the expected result
 
         // 1,2,3,4
-        stack.move_layer(
-            LayerPosition::FromFront(0),
-            LayerPosition::FromBack(0),
-        );
+        stack.move_layer(LayerPosition::FromFront(0), LayerPosition::FromBack(0));
 
         // 4,1,2,3
-        stack.move_layer(
-            LayerPosition::FromBack(0),
-            LayerPosition::FromFront(0),
-        );
+        stack.move_layer(LayerPosition::FromBack(0), LayerPosition::FromFront(0));
         // 1,2,3,4
-        stack.move_layer(
-            LayerPosition::FromFront(1),
-            LayerPosition::FromFront(0),
-        );
+        stack.move_layer(LayerPosition::FromFront(1), LayerPosition::FromFront(0));
         // 1,2,4,3
 
         let layer = stack.pop_layer().unwrap();
@@ -809,5 +911,59 @@ mod tests {
             .get_mut(LayerPosition::FromBack(0))
             .unwrap()
             .is::<TextView>());
+    }
+}
+
+crate::manual_blueprint!(StackView, |config, context| {
+    let mut stack = StackView::new();
+
+    // TODO: Use `layers`?
+    // Start from the top? (So the yaml file looks like the actual stack?)
+    // Use `top_to_bottom` field name to make this clear?
+    if let Some(children) = context.resolve(&config["children"])? {
+        stack.layers = children;
+    }
+
+    Ok(stack)
+});
+
+#[cfg(feature = "builder")]
+impl crate::builder::Resolvable for Placement {
+    fn from_config(
+        config: &crate::builder::Config,
+        context: &crate::builder::Context,
+    ) -> Result<Self, crate::builder::Error> {
+        match config.as_str() {
+            Some("fullscreen" | "Fullscreen" | "FullScreen") => Ok(Self::Fullscreen),
+            _ => Ok(Self::Floating(context.resolve(config)?)),
+        }
+    }
+}
+
+#[cfg(feature = "builder")]
+impl crate::builder::Resolvable for Child {
+    fn from_config(
+        config: &crate::builder::Config,
+        context: &crate::builder::Context,
+    ) -> Result<Self, crate::builder::Error> {
+        let view: crate::views::BoxedView = context.resolve(&config["child"])?;
+
+        let modal: Option<bool> = context.resolve(&config["modal"])?;
+        let placement = context.resolve(&config["placement"])?;
+        let position: Position = context.resolve(&config["position"])?;
+
+        // Right now only plain layer+shadow views are allowed in configs.
+        Ok(Child {
+            view: CircularFocus::new(ChildWrapper::Shadow(
+                ShadowView::new(Layer::new(view))
+                    .top_padding(position.y == Offset::Center)
+                    .left_padding(position.x == Offset::Center),
+            ))
+            .wrap_tab(),
+            modal: modal.unwrap_or(true),
+            size: Vec2::zero(),
+            placement,
+            virgin: true,
+        })
     }
 }

@@ -20,7 +20,7 @@ use crate::{
 /// child view).
 ///
 /// [`wrap_impl!`]: crate::wrap_impl!
-pub trait ViewWrapper: 'static {
+pub trait ViewWrapper: Send + Sync + 'static {
     /// Type that this view wraps.
     type V: View + ?Sized;
 
@@ -72,28 +72,18 @@ pub trait ViewWrapper: 'static {
     }
 
     /// Wraps the `take_focus` method.
-    fn wrap_take_focus(
-        &mut self,
-        source: Direction,
-    ) -> Result<EventResult, CannotFocus> {
+    fn wrap_take_focus(&mut self, source: Direction) -> Result<EventResult, CannotFocus> {
         self.with_view_mut(|v| v.take_focus(source))
             .unwrap_or(Err(CannotFocus))
     }
 
     /// Wraps the `find` method.
-    fn wrap_call_on_any<'a>(
-        &mut self,
-        selector: &Selector<'_>,
-        callback: AnyCb<'a>,
-    ) {
+    fn wrap_call_on_any(&mut self, selector: &Selector, callback: AnyCb) {
         self.with_view_mut(|v| v.call_on_any(selector, callback));
     }
 
     /// Wraps the `focus_view` method.
-    fn wrap_focus_view(
-        &mut self,
-        selector: &Selector<'_>,
-    ) -> Result<EventResult, ViewNotFound> {
+    fn wrap_focus_view(&mut self, selector: &Selector) -> Result<EventResult, ViewNotFound> {
         self.with_view_mut(|v| v.focus_view(selector))
             .unwrap_or(Err(ViewNotFound))
     }
@@ -128,18 +118,11 @@ impl<T: ViewWrapper> View for T {
         self.wrap_layout(size);
     }
 
-    fn take_focus(
-        &mut self,
-        source: Direction,
-    ) -> Result<EventResult, CannotFocus> {
+    fn take_focus(&mut self, source: Direction) -> Result<EventResult, CannotFocus> {
         self.wrap_take_focus(source)
     }
 
-    fn call_on_any<'a>(
-        &mut self,
-        selector: &Selector<'_>,
-        callback: AnyCb<'a>,
-    ) {
+    fn call_on_any(&mut self, selector: &Selector, callback: AnyCb) {
         self.wrap_call_on_any(selector, callback)
     }
 
@@ -147,10 +130,7 @@ impl<T: ViewWrapper> View for T {
         self.wrap_needs_relayout()
     }
 
-    fn focus_view(
-        &mut self,
-        selector: &Selector<'_>,
-    ) -> Result<EventResult, ViewNotFound> {
+    fn focus_view(&mut self, selector: &Selector) -> Result<EventResult, ViewNotFound> {
         self.wrap_focus_view(selector)
     }
 

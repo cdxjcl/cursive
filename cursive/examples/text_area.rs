@@ -34,9 +34,7 @@ fn main() {
                     )
                     .button("Ok", |s| {
                         let text = s
-                            .call_on_name("edit", |view: &mut EditView| {
-                                view.get_content()
-                            })
+                            .call_on_name("edit", |view: &mut EditView| view.get_content())
                             .unwrap();
                         find(s, &text);
                     })
@@ -70,6 +68,6 @@ fn find(siv: &mut Cursive, text: &str) {
 
     if let Some(Err(())) = res {
         // If we didn't find anything, tell the user!
-        siv.add_layer(Dialog::info(format!("`{}` not found", text)));
+        siv.add_layer(Dialog::info(format!("`{text}` not found")));
     }
 }

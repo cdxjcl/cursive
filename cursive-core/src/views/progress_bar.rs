@@ -1,5 +1,5 @@
 use crate::align::HAlign;
-use crate::theme::{ColorStyle, ColorType, Effect};
+use crate::style::{ColorStyle, ColorType, Effect, PaletteColor};
 use crate::utils::Counter;
 use crate::view::View;
 use crate::{Printer, With};
@@ -39,7 +39,7 @@ pub struct ProgressBar {
     value: Counter,
     color: ColorType,
     // TODO: use a Promise instead?
-    label_maker: Box<dyn Fn(usize, (usize, usize)) -> String>,
+    label_maker: Box<dyn Fn(usize, (usize, usize)) -> String + Send + Sync>,
 }
 
 fn make_percentage(value: usize, (min, max): (usize, usize)) -> String {
@@ -53,7 +53,7 @@ fn make_percentage(value: usize, (min, max): (usize, usize)) -> String {
     } else {
         percentage
     };
-    format!("{} %", percentage)
+    format!("{percentage} %")
 }
 
 /// Returns length * value/max
@@ -88,7 +88,7 @@ impl ProgressBar {
             min: 0,
             max: 100,
             value: Counter::new(0),
-            color: ColorStyle::highlight().back,
+            color: PaletteColor::Highlight.into(),
             label_maker: Box::new(make_percentage),
         }
     }
@@ -120,10 +120,7 @@ impl ProgressBar {
     ///
     /// Chainable variant.
     #[must_use]
-    pub fn with_task<F: FnOnce(Counter) + Send + 'static>(
-        self,
-        task: F,
-    ) -> Self {
+    pub fn with_task<F: FnOnce(Counter) + Send + 'static>(self, task: F) -> Self {
         self.with(|s| s.start(task))
     }
 
@@ -141,7 +138,7 @@ impl ProgressBar {
     /// }
     /// ```
     #[must_use]
-    pub fn with_label<F: Fn(usize, (usize, usize)) -> String + 'static>(
+    pub fn with_label<F: Fn(usize, (usize, usize)) -> String + 'static + Send + Sync>(
         self,
         label_maker: F,
     ) -> Self {
@@ -152,7 +149,8 @@ impl ProgressBar {
     ///
     /// The given function will be called with `(value, (min, max))`.
     /// Its output will be used as the label to print inside the progress bar.
-    pub fn set_label<F: Fn(usize, (usize, usize)) -> String + 'static>(
+    #[crate::callback_helpers]
+    pub fn set_label<F: Fn(usize, (usize, usize)) -> String + 'static + Send + Sync>(
         &mut self,
         label_maker: F,
     ) {
@@ -296,10 +294,10 @@ impl View for ProgressBar {
         let label = (self.label_maker)(value, (self.min, self.max));
         let offset = HAlign::Center.get_offset(label.len(), printer.size.x);
 
-        let color_style =
-            ColorStyle::new(ColorStyle::highlight().front, self.color);
+        let color_style = ColorStyle::new(PaletteColor::HighlightText, self.color);
 
         printer.with_color(color_style, |printer| {
+            // TODO: Instead, write it with self.color and inherit_parent background?
             // Draw the right half of the label in reverse
             printer.with_effect(Effect::Reverse, |printer| {
                 printer.print((length, 0), sub_block(extra));
@@ -312,4 +310,13 @@ impl View for ProgressBar {
             printer.print((offset, 0), &label);
         });
     }
+}
+
+#[crate::blueprint(ProgressBar::new())]
+struct Blueprint {
+    min: Option<usize>,
+    max: Option<usize>,
+    value: Option<usize>,
+    color: Option<ColorType>,
+    label: Option<_>,
 }

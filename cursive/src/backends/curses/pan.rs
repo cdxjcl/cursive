@@ -98,11 +98,7 @@ impl Backend {
     }
 
     /// Save a new color pair.
-    fn insert_color(
-        &self,
-        pairs: &mut HashMap<(i16, i16), i32>,
-        (front, back): (i16, i16),
-    ) -> i32 {
+    fn insert_color(&self, pairs: &mut HashMap<(i16, i16), i32>, (front, back): (i16, i16)) -> i32 {
         let n = 1 + pairs.len() as i32;
 
         // TODO: when COLORS_PAIRS is available...
@@ -131,7 +127,7 @@ impl Backend {
             // We got it!
             pairs[&pair]
         } else {
-            self.insert_color(&mut *pairs, pair)
+            self.insert_color(&mut pairs, pair)
         }
     }
 
@@ -149,12 +145,12 @@ impl Backend {
 
         if let Some(ev) = self.window.getch() {
             Some(match ev {
-                pancurses::Input::Character('\n')
-                | pancurses::Input::Character('\r') => Event::Key(Key::Enter),
+                pancurses::Input::Character('\n') | pancurses::Input::Character('\r') => {
+                    Event::Key(Key::Enter)
+                }
                 // TODO: wait for a very short delay. If more keys are
                 // pipelined, it may be an escape sequence.
-                pancurses::Input::Character('\u{7f}')
-                | pancurses::Input::Character('\u{8}') => {
+                pancurses::Input::Character('\u{7f}') | pancurses::Input::Character('\u{8}') => {
                     Event::Key(Key::Backspace)
                 }
                 pancurses::Input::Character('\u{9}') => Event::Key(Key::Tab),
@@ -312,9 +308,8 @@ impl Backend {
         let _alt = (mevent.bstate & pancurses::BUTTON_ALT as mmask_t) != 0;
         let _ctrl = (mevent.bstate & pancurses::BUTTON_CTRL as mmask_t) != 0;
 
-        mevent.bstate &= !(pancurses::BUTTON_SHIFT
-            | pancurses::BUTTON_ALT
-            | pancurses::BUTTON_CTRL) as mmask_t;
+        mevent.bstate &=
+            !(pancurses::BUTTON_SHIFT | pancurses::BUTTON_ALT | pancurses::BUTTON_CTRL) as mmask_t;
 
         let make_event = |event| Event::Mouse {
             offset: Vec2::zero(),
@@ -330,11 +325,10 @@ impl Backend {
                 .or_else(|| {
                     // In legacy mode, some buttons overlap,
                     // so we need to disambiguate.
-                    (mevent.bstate
-                        == pancurses::BUTTON5_DOUBLE_CLICKED as mmask_t)
-                        .then(|| MouseEvent::WheelDown)
+                    (mevent.bstate == pancurses::BUTTON5_DOUBLE_CLICKED as mmask_t)
+                        .then_some(MouseEvent::WheelDown)
                 })
-                .map(&make_event)
+                .map(make_event)
                 .unwrap_or_else(|| {
                     debug!("We got a mouse drag, but no last mouse pressed?");
                     Event::Unknown(vec![])
@@ -383,8 +377,12 @@ impl backend::Backend for Backend {
         "pancurses"
     }
 
+    fn is_persistent(&self) -> bool {
+        true
+    }
+
     fn set_title(&mut self, title: String) {
-        print!("\x1B]0;{}\x07", title);
+        print!("\x1B]0;{title}\x07");
         stdout().flush().expect("could not flush stdout");
     }
 
@@ -449,19 +447,12 @@ impl backend::Backend for Backend {
         self.window.refresh();
     }
 
-    fn print_at(&self, pos: Vec2, text: &str) {
-        self.window.mvaddstr(pos.y as i32, pos.x as i32, text);
+    fn move_to(&self, pos: Vec2) {
+        self.window.mv(pos.y as i32, pos.x as i32);
     }
 
-    fn print_at_rep(&self, pos: Vec2, repetitions: usize, text: &str) {
-        if repetitions > 0 {
-            self.window.mvaddstr(pos.y as i32, pos.x as i32, text);
-            let mut dupes_left = repetitions - 1;
-            while dupes_left > 0 {
-                self.window.addstr(text);
-                dupes_left -= 1;
-            }
-        }
+    fn print(&self, text: &str) {
+        self.window.addstr(text);
     }
 
     fn poll_event(&mut self) -> Option<Event> {
@@ -489,9 +480,9 @@ where
         | pancurses::BUTTON3_RELEASED
         | pancurses::BUTTON4_RELEASED
         | pancurses::BUTTON5_RELEASED => f(MouseEvent::Release(button)),
-        pancurses::BUTTON1_PRESSED
-        | pancurses::BUTTON2_PRESSED
-        | pancurses::BUTTON3_PRESSED => f(MouseEvent::Press(button)),
+        pancurses::BUTTON1_PRESSED | pancurses::BUTTON2_PRESSED | pancurses::BUTTON3_PRESSED => {
+            f(MouseEvent::Press(button))
+        }
         pancurses::BUTTON1_CLICKED
         | pancurses::BUTTON2_CLICKED
         | pancurses::BUTTON3_CLICKED

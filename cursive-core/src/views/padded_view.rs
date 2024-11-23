@@ -31,13 +31,7 @@ impl<V> PaddedView<V> {
     }
 
     /// Wraps `view` in a new `PaddedView` with the given margins.
-    pub fn lrtb(
-        left: usize,
-        right: usize,
-        top: usize,
-        bottom: usize,
-        view: V,
-    ) -> Self {
+    pub fn lrtb(left: usize, right: usize, top: usize, bottom: usize, view: V) -> Self {
         Self::new(Margins::lrtb(left, right, top, bottom), view)
     }
 
@@ -80,3 +74,14 @@ impl<V: View> ViewWrapper for PaddedView<V> {
         self.view.important_area(inner_size) + self.margins.top_left()
     }
 }
+
+#[crate::blueprint(PaddedView::new(margins, view))]
+struct Blueprint {
+    margins: Margins,
+    view: crate::views::BoxedView,
+}
+
+crate::manual_blueprint!(with padding, |config, context| {
+    let margins = context.resolve(config)?;
+    Ok(move |view| PaddedView::new(margins, view))
+});

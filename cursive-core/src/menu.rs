@@ -13,8 +13,12 @@
 //! [`Tree`]: struct.Tree.html
 //! [menubar]: ../struct.Cursive.html#method.menubar
 
-use crate::{event::Callback, Cursive, With};
-use std::rc::Rc;
+use crate::utils::markup::PlainStr;
+use crate::utils::span::{SpannedStr, SpannedText as _};
+use crate::{event::Callback, style::Style, utils::markup::StyledString, Cursive, With};
+use std::sync::Arc;
+
+static DELIMITER: PlainStr = PlainStr::new_with_width("│", 1);
 
 /// Root of a menu tree.
 #[derive(Default, Clone)]
@@ -29,7 +33,7 @@ pub enum Item {
     /// Actionnable button with a label.
     Leaf {
         /// Text displayed for this entry.
-        label: String,
+        label: StyledString,
         /// Callback to run when the entry is selected.
         cb: Callback,
         /// Whether this item is enabled.
@@ -41,9 +45,9 @@ pub enum Item {
     /// Sub-menu with a label.
     Subtree {
         /// Text displayed for this entry.
-        label: String,
+        label: StyledString,
         /// Subtree under this item.
-        tree: Rc<Tree>,
+        tree: Arc<Tree>,
         /// Whether this item is enabled.
         ///
         /// Disabled items cannot be selected and are displayed grayed out.
@@ -58,8 +62,8 @@ impl Item {
     /// Create a new leaf menu item.
     pub fn leaf<S, F>(label: S, cb: F) -> Self
     where
-        S: Into<String>,
-        F: 'static + Fn(&mut Cursive),
+        S: Into<StyledString>,
+        F: 'static + Fn(&mut Cursive) + Send + Sync,
     {
         let label = label.into();
         let cb = Callback::from_fn(cb);
@@ -70,10 +74,10 @@ impl Item {
     /// Create a new subtree menu item.
     pub fn subtree<S>(label: S, tree: Tree) -> Self
     where
-        S: Into<String>,
+        S: Into<StyledString>,
     {
         let label = label.into();
-        let tree = Rc::new(tree);
+        let tree = Arc::new(tree);
         let enabled = true;
         Item::Subtree {
             label,
@@ -87,9 +91,19 @@ impl Item {
     /// Returns a vertical bar string if `self` is a delimiter.
     pub fn label(&self) -> &str {
         match *self {
-            Item::Delimiter => "│",
+            Item::Delimiter => DELIMITER.source(),
+            Item::Leaf { ref label, .. } | Item::Subtree { ref label, .. } => label.source(),
+        }
+    }
+
+    /// Returns the styled lable for this item
+    ///
+    /// Returns a vertical bar string if `self` is a delimiter.
+    pub fn styled_label(&self) -> SpannedStr<Style> {
+        match *self {
+            Item::Delimiter => DELIMITER.as_styled_str(),
             Item::Leaf { ref label, .. } | Item::Subtree { ref label, .. } => {
-                label
+                SpannedStr::from(label)
             }
         }
     }
@@ -99,9 +113,7 @@ impl Item {
     /// Only labels and subtrees can be enabled. Delimiters
     pub fn is_enabled(&self) -> bool {
         match *self {
-            Item::Leaf { enabled, .. } | Item::Subtree { enabled, .. } => {
-                enabled
-            }
+            Item::Leaf { enabled, .. } | Item::Subtree { enabled, .. } => enabled,
             Item::Delimiter => false,
         }
     }
@@ -149,7 +161,7 @@ impl Item {
     /// Returns `None` if `self` is not a `Item::Subtree`.
     pub fn as_subtree(&mut self) -> Option<&mut Tree> {
         match *self {
-            Item::Subtree { ref mut tree, .. } => Some(Rc::make_mut(tree)),
+            Item::Subtree { ref mut tree, .. } => Some(Arc::make_mut(tree)),
             _ => None,
         }
     }
@@ -157,8 +169,10 @@ impl Item {
 
 impl Tree {
     /// Creates a new, empty tree.
-    pub fn new() -> Self {
-        Self::default()
+    pub const fn new() -> Self {
+        Self {
+            children: Vec::new(),
+        }
     }
 
     /// Remove every children from this tree.
@@ -191,8 +205,8 @@ impl Tree {
     /// Adds a actionnable leaf to the end of this tree.
     pub fn add_leaf<S, F>(&mut self, label: S, cb: F)
     where
-        S: Into<String>,
-        F: 'static + Fn(&mut Cursive),
+        S: Into<StyledString>,
+        F: 'static + Fn(&mut Cursive) + Send + Sync,
     {
         let i = self.children.len();
         self.insert_leaf(i, label, cb);
@@ -201,8 +215,8 @@ impl Tree {
     /// Inserts a leaf at the given position.
     pub fn insert_leaf<S, F>(&mut self, i: usize, label: S, cb: F)
     where
-        S: Into<String>,
-        F: 'static + Fn(&mut Cursive),
+        S: Into<StyledString>,
+        F: 'static + Fn(&mut Cursive) + Send + Sync,
     {
         let label = label.into();
         self.insert(
@@ -219,8 +233,8 @@ impl Tree {
     #[must_use]
     pub fn leaf<S, F>(self, label: S, cb: F) -> Self
     where
-        S: Into<String>,
-        F: 'static + Fn(&mut Cursive),
+        S: Into<StyledString>,
+        F: 'static + Fn(&mut Cursive) + Send + Sync,
     {
         self.with(|menu| menu.add_leaf(label, cb))
     }
@@ -228,12 +242,12 @@ impl Tree {
     /// Inserts a subtree at the given position.
     pub fn insert_subtree<S>(&mut self, i: usize, label: S, tree: Tree)
     where
-        S: Into<String>,
+        S: Into<StyledString>,
     {
         let label = label.into();
         let tree = Item::Subtree {
             label,
-            tree: Rc::new(tree),
+            tree: Arc::new(tree),
             enabled: true,
         };
         self.insert(i, tree);
@@ -256,7 +270,7 @@ impl Tree {
     /// Adds a submenu to the end of this tree.
     pub fn add_subtree<S>(&mut self, label: S, tree: Tree)
     where
-        S: Into<String>,
+        S: Into<StyledString>,
     {
         let i = self.children.len();
         self.insert_subtree(i, label, tree);
@@ -266,7 +280,7 @@ impl Tree {
     #[must_use]
     pub fn subtree<S>(self, label: S, tree: Tree) -> Self
     where
-        S: Into<String>,
+        S: Into<StyledString>,
     {
         self.with(|menu| menu.add_subtree(label, tree))
     }
@@ -327,5 +341,56 @@ impl Tree {
     /// Returns `true` if this tree has no children.
     pub fn is_empty(&self) -> bool {
         self.children.is_empty()
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::style::{ColorStyle, ColorType, Effects, Style};
+    use crate::utils::span::Span;
+
+    #[test]
+    fn test_styled_label_delimiter() {
+        let item = Item::Delimiter;
+        let styled_label = item.styled_label();
+        assert_eq!(styled_label.source(), DELIMITER.source());
+
+        let expected_spans: Vec<Span<Style>> = vec![Span {
+            content: DELIMITER.source(),
+            attr: &Style {
+                effects: Effects::EMPTY,
+                color: ColorStyle {
+                    front: ColorType::InheritParent,
+                    back: ColorType::InheritParent,
+                },
+            },
+            width: 1,
+        }];
+
+        assert_eq!(styled_label.spans().collect::<Vec<_>>(), expected_spans);
+    }
+
+    #[test]
+    fn test_styled_label_leaf() {
+        let label = StyledString::plain("Leaf");
+        let item = Item::Leaf {
+            label: label.clone(),
+            enabled: true,
+            cb: Callback::from_fn(|_| {}),
+        };
+        let styled_label = item.styled_label();
+        assert_eq!(styled_label.source(), "Leaf");
+    }
+
+    #[test]
+    fn test_styled_label_subtree() {
+        let label = StyledString::plain("Subtree");
+        let item = Item::Subtree {
+            label: label.clone(),
+            tree: Tree::default().into(),
+            enabled: true,
+        };
+        let styled_label = item.styled_label();
+        assert_eq!(styled_label.source(), "Subtree");
     }
 }

@@ -1,6 +1,6 @@
 use crate::{view::ViewWrapper, Vec2, View};
 
-type Callback<V> = dyn FnMut(&mut V, Vec2);
+type Callback<V> = dyn FnMut(&mut V, Vec2) + Send + Sync;
 
 /// View wrapper overriding the `View::layout` method.
 pub struct OnLayoutView<V> {
@@ -8,7 +8,7 @@ pub struct OnLayoutView<V> {
     on_layout: Box<Callback<V>>,
 }
 
-impl<V> OnLayoutView<V> {
+impl<V: 'static> OnLayoutView<V> {
     /// Wraps a view in an `OnLayoutView`.
     ///
     /// Will run the given closure for layout _instead_ of the one from `view`.
@@ -26,7 +26,7 @@ impl<V> OnLayoutView<V> {
     /// ```
     pub fn new<F>(view: V, on_layout: F) -> Self
     where
-        F: FnMut(&mut V, Vec2) + 'static,
+        F: FnMut(&mut V, Vec2) + 'static + Send + Sync,
     {
         let on_layout = Box::new(on_layout);
         OnLayoutView { view, on_layout }
@@ -45,9 +45,10 @@ impl<V> OnLayoutView<V> {
     }
 
     /// Replaces the callback to run.
+    #[crate::callback_helpers]
     pub fn set_on_layout<F>(&mut self, on_layout: F)
     where
-        F: FnMut(&mut V, Vec2) + 'static,
+        F: FnMut(&mut V, Vec2) + 'static + Send + Sync,
     {
         self.on_layout = Box::new(on_layout);
     }
@@ -62,3 +63,21 @@ impl<V: View> ViewWrapper for OnLayoutView<V> {
         (self.on_layout)(&mut self.view, size);
     }
 }
+
+#[crate::blueprint(OnLayoutView::wrap(view))]
+struct Blueprint {
+    view: crate::views::BoxedView,
+
+    on_layout: Option<_>,
+}
+
+crate::manual_blueprint!(with on_layout, |config, context| {
+    let callback = context.resolve(config)?;
+    Ok(move |view| {
+        let mut view = OnLayoutView::wrap(view);
+        if let Some(callback) = callback {
+            view.set_on_layout_cb(callback);
+        }
+        view
+    })
+});

@@ -40,8 +40,7 @@ fn main() {
     // Let's add a ResizedView to keep the list at a reasonable size
     // (it can scroll anyway).
     siv.add_layer(
-        Dialog::around(select.scrollable().fixed_size((20, 10)))
-            .title("Where are you from?"),
+        Dialog::around(select.scrollable().fixed_size((20, 10))).title("Where are you from?"),
     );
 
     siv.run();
@@ -51,8 +50,6 @@ fn main() {
 // but it's not required.
 fn show_next_window(siv: &mut Cursive, city: &str) {
     siv.pop_layer();
-    let text = format!("{} is a great city!", city);
-    siv.add_layer(
-        Dialog::around(TextView::new(text)).button("Quit", |s| s.quit()),
-    );
+    let text = format!("{city} is a great city!");
+    siv.add_layer(Dialog::around(TextView::new(text)).button("Quit", |s| s.quit()));
 }

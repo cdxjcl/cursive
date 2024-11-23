@@ -44,6 +44,18 @@ impl Default for ScrollStrategy {
     }
 }
 
+impl std::str::FromStr for ScrollStrategy {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "KeepRow" | "keep_row" => Self::KeepRow,
+            "StickToTop" | "stick_to_top" => Self::StickToTop,
+            "StickToBottom" | "stick_to_bottom" => Self::StickToBottom,
+            _ => return Err(()),
+        })
+    }
+}
+
 /// Performs `View::on_event` on a `scroll::Scroller`.
 ///
 /// Example:
@@ -176,11 +188,8 @@ where
 /// Performs a line-based `View::draw` on a `scroll::Scroller`.
 ///
 /// This is an alternative to `scroll::draw()` when you just need to print individual lines.
-pub fn draw_lines<T, LineDrawer>(
-    scroller: &T,
-    printer: &Printer,
-    mut line_drawer: LineDrawer,
-) where
+pub fn draw_lines<T, LineDrawer>(scroller: &T, printer: &Printer, mut line_drawer: LineDrawer)
+where
     T: Scroller,
     LineDrawer: FnMut(&T, &Printer, usize),
 {
@@ -224,11 +233,7 @@ pub fn draw_frame<T, LeftBorder, TopBorder, RightBorder, BottomBorder>(
     printer.print_hline((viewport.right() + 2, 0), scrollbar_size.x, "─");
     printer.print_hline((viewport.right() + 2, size.y), scrollbar_size.x, "─");
     printer.print_vline((0, viewport.bottom() + 2), scrollbar_size.y, "│");
-    printer.print_vline(
-        (size.x, viewport.bottom() + 2),
-        scrollbar_size.y,
-        "│",
-    );
+    printer.print_vline((size.x, viewport.bottom() + 2), scrollbar_size.y, "│");
 
     for (i, y) in (viewport.top()..=viewport.bottom()).enumerate() {
         left_border(scroller, &printer.offset((0, i + 1)), y);

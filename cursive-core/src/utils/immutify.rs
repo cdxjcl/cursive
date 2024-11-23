@@ -10,7 +10,7 @@
 
 /// Wraps a `FnMut` into a `Fn`
 ///
-/// This can be used to use a `FnMut` when a callack expects a `Fn`.
+/// This can be used to use a `FnMut` when a callback expects a `Fn`.
 ///
 /// # Note
 ///
@@ -75,10 +75,9 @@ pub fn immutify<F: FnMut(&mut Cursive)>(
 #[macro_export]
 macro_rules! immut1 {
     ($f:expr ; else $else:expr) => {{
-        let callback = ::std::cell::RefCell::new($f);
+        let callback = ::std::sync::Mutex::new($f);
         move |s| {
-            if let ::std::result::Result::Ok(mut f) = callback.try_borrow_mut()
-            {
+            if let ::std::result::Result::Ok(mut f) = callback.try_lock() {
                 (&mut *f)(s)
             } else {
                 $else
@@ -86,10 +85,9 @@ macro_rules! immut1 {
         }
     }};
     ($f:expr) => {{
-        let callback = ::std::cell::RefCell::new($f);
+        let callback = ::std::sync::Mutex::new($f);
         move |s| {
-            if let ::std::result::Result::Ok(mut f) = callback.try_borrow_mut()
-            {
+            if let ::std::result::Result::Ok(mut f) = callback.try_lock() {
                 (&mut *f)(s);
             }
         }
@@ -141,10 +139,9 @@ macro_rules! once1 {
 #[macro_export]
 macro_rules! immut2 {
     ($f:expr ; else $else:expr) => {{
-        let callback = ::std::cell::RefCell::new($f);
+        let callback = ::std::sync::Mutex::new($f);
         move |s, t| {
-            if let ::std::result::Result::Ok(mut f) = callback.try_borrow_mut()
-            {
+            if let ::std::result::Result::Ok(mut f) = callback.try_lock() {
                 (&mut *f)(s, t)
             } else {
                 $else
@@ -152,9 +149,9 @@ macro_rules! immut2 {
         }
     }};
     ($f:expr) => {{
-        let callback = ::std::cell::RefCell::new($f);
+        let callback = ::std::sync::Mutex::new($f);
         move |s, t| {
-            if let Ok(mut f) = callback.try_borrow_mut() {
+            if let Ok(mut f) = callback.try_lock() {
                 (&mut *f)(s, t);
             }
         }
@@ -182,10 +179,9 @@ macro_rules! immut2 {
 #[macro_export]
 macro_rules! immut3 {
     ($f:expr ; else $else:expr) => {{
-        let callback = ::std::cell::RefCell::new($f);
+        let callback = ::std::sync::Mutex::new($f);
         move |s, t, u| {
-            if let ::std::result::Result::Ok(mut f) = callback.try_borrow_mut()
-            {
+            if let ::std::result::Result::Ok(mut f) = callback.try_lock() {
                 (&mut *f)(s, t, u)
             } else {
                 $else
@@ -193,9 +189,9 @@ macro_rules! immut3 {
         }
     }};
     ($f:expr) => {{
-        let callback = ::std::cell::RefCell::new($f);
+        let callback = ::std::sync::Mutex::new($f);
         move |s, t, u| {
-            if let Ok(mut f) = callback.try_borrow_mut() {
+            if let Ok(mut f) = callback.try_lock() {
                 (&mut *f)(s, t, u);
             }
         }
@@ -212,8 +208,7 @@ mod tests {
     #[test]
     fn immut3_loop() {
         let mut count = 0;
-        let reenter: &mut dyn FnMut(i64, i64, i64) =
-            &mut |a, b, c| count += a + b + c;
+        let reenter: &mut dyn FnMut(i64, i64, i64) = &mut |a, b, c| count += a + b + c;
         for _i in 0..3 {
             call(immut3! { |a, b, c| reenter(2*a, b, c) }, 1, 2, 3);
         }

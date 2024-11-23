@@ -17,15 +17,15 @@ use crate::Cursive;
 use crate::Vec2;
 use std::any::Any;
 use std::ops::Deref;
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// Callback is a function that can be triggered by an event.
 /// It has a mutable access to the cursive root.
 ///
 /// It is meant to be stored in views.
 #[derive(Clone)]
-pub struct Callback(Rc<dyn Fn(&mut Cursive)>);
-// TODO: remove the Box when Box<T: Sized> -> Rc<T> is possible
+pub struct Callback(Arc<dyn Fn(&mut Cursive) + Send + Sync>);
+// TODO: remove the Box when Box<T: Sized> -> Arc<T> is possible
 
 /// A callback that can be run on `&mut dyn View`.
 ///
@@ -36,8 +36,32 @@ pub type AnyCb<'a> = &'a mut dyn FnMut(&mut dyn crate::view::View);
 ///
 /// It is meant to be stored in views.
 pub struct EventTrigger {
-    trigger: Box<dyn Fn(&Event) -> bool>,
-    tag: Box<dyn AnyTag>,
+    // A function called on each individual event to know if it applies.
+    trigger: Box<dyn Fn(&Event) -> bool + Send + Sync>,
+
+    // Some marker to indicate the origin.
+    //
+    // In practice it could be a `&'static str` describing the trigger, or an `Event` for
+    // single-event triggers.
+    //
+    // TODO: Require `Debug` on the tag, so we could implement `Debug` for `EventTrigger`?
+    tag: Box<dyn AnyTag + Send + Sync>,
+}
+
+impl std::fmt::Debug for EventTrigger {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // For some well-known types we can print something.
+        if let Some(event) = self.tag.as_any().downcast_ref::<Event>() {
+            return write!(f, "EventTrigger {{ {event:?} }}");
+        }
+
+        if let Some(str) = self.tag.as_any().downcast_ref::<&'static str>() {
+            return write!(f, "EventTrigger {{ {str:?} }}");
+        }
+
+        // But in the general case right now we can only guess
+        f.write_str("EventTrigger { ? }")
+    }
 }
 
 trait AnyTag: Any + std::fmt::Debug {
@@ -57,7 +81,7 @@ impl EventTrigger {
     /// Create a new `EventTrigger` using the given function as filter.
     pub fn from_fn<F>(f: F) -> Self
     where
-        F: 'static + Fn(&Event) -> bool,
+        F: 'static + Fn(&Event) -> bool + Send + Sync,
     {
         EventTrigger::from_fn_and_tag(f, "free function")
     }
@@ -65,8 +89,8 @@ impl EventTrigger {
     /// Create a new `EventTrigger`.
     pub fn from_fn_and_tag<F, T>(f: F, tag: T) -> Self
     where
-        F: 'static + Fn(&Event) -> bool,
-        T: Any + std::fmt::Debug,
+        F: 'static + Fn(&Event) -> bool + Send + Sync,
+        T: Any + std::fmt::Debug + Send + Sync,
     {
         let tag = Box::new(tag);
         let trigger = Box::new(f);
@@ -144,10 +168,7 @@ impl EventTrigger {
         let other_trigger = other.trigger;
         let tag = (self.tag, "or", other.tag);
 
-        Self::from_fn_and_tag(
-            move |e| self_trigger(e) || other_trigger(e),
-            tag,
-        )
+        Self::from_fn_and_tag(move |e| self_trigger(e) || other_trigger(e), tag)
     }
 }
 
@@ -172,7 +193,7 @@ impl From<Key> for EventTrigger {
 
 impl<F> From<F> for EventTrigger
 where
-    F: 'static + Fn(&Event) -> bool,
+    F: 'static + Fn(&Event) -> bool + Send + Sync,
 {
     fn from(f: F) -> Self {
         Self::from_fn(f)
@@ -183,9 +204,9 @@ impl Callback {
     /// Wraps the given function into a `Callback` object.
     pub fn from_fn<F>(f: F) -> Self
     where
-        F: 'static + Fn(&mut Cursive),
+        F: 'static + Fn(&mut Cursive) + Send + Sync,
     {
-        Callback(Rc::new(move |siv| {
+        Callback(Arc::new(move |siv| {
             f(siv);
         }))
     }
@@ -195,7 +216,7 @@ impl Callback {
     /// If this methods tries to call itself, nested calls will be no-ops.
     pub fn from_fn_mut<F>(f: F) -> Self
     where
-        F: 'static + FnMut(&mut Cursive),
+        F: 'static + FnMut(&mut Cursive) + Send,
     {
         Self::from_fn(crate::immut1!(f))
     }
@@ -205,7 +226,7 @@ impl Callback {
     /// After being called once, the callback will become a no-op.
     pub fn from_fn_once<F>(f: F) -> Self
     where
-        F: 'static + FnOnce(&mut Cursive),
+        F: 'static + FnOnce(&mut Cursive) + Send,
     {
         Self::from_fn_mut(crate::once1!(f))
     }
@@ -224,15 +245,15 @@ impl Deref for Callback {
     }
 }
 
-impl From<Rc<dyn Fn(&mut Cursive)>> for Callback {
-    fn from(f: Rc<dyn Fn(&mut Cursive)>) -> Self {
+impl From<Arc<dyn Fn(&mut Cursive) + Send + Sync>> for Callback {
+    fn from(f: Arc<dyn Fn(&mut Cursive) + Send + Sync>) -> Self {
         Callback(f)
     }
 }
 
-impl From<Box<dyn Fn(&mut Cursive)>> for Callback {
-    fn from(f: Box<dyn Fn(&mut Cursive)>) -> Self {
-        Callback(Rc::from(f))
+impl From<Box<dyn Fn(&mut Cursive) + Send + Sync>> for Callback {
+    fn from(f: Box<dyn Fn(&mut Cursive) + Send + Sync>) -> Self {
+        Callback(Arc::from(f))
     }
 }
 
@@ -245,11 +266,21 @@ pub enum EventResult {
     Consumed(Option<Callback>), // TODO: make this a FnOnce?
 }
 
+impl std::fmt::Debug for EventResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EventResult::Ignored => f.write_str("EventResult::Ignored"),
+            EventResult::Consumed(None) => f.write_str("EventResult::Consumed(None)"),
+            EventResult::Consumed(_) => f.write_str("EventResult::Consumed(Some(_))"),
+        }
+    }
+}
+
 impl EventResult {
     /// Convenient method to create `Consumed(Some(f))`
     pub fn with_cb<F>(f: F) -> Self
     where
-        F: 'static + Fn(&mut Cursive),
+        F: 'static + Fn(&mut Cursive) + Send + Sync,
     {
         EventResult::Consumed(Some(Callback::from_fn(f)))
     }
@@ -259,7 +290,7 @@ impl EventResult {
     /// After being called once, the callback will become a no-op.
     pub fn with_cb_once<F>(f: F) -> Self
     where
-        F: 'static + FnOnce(&mut Cursive),
+        F: 'static + FnOnce(&mut Cursive) + Send,
     {
         EventResult::Consumed(Some(Callback::from_fn_once(f)))
     }
@@ -304,20 +335,35 @@ impl EventResult {
     #[must_use]
     pub fn and(self, other: Self) -> Self {
         match (self, other) {
-            (EventResult::Ignored, result)
-            | (result, EventResult::Ignored) => result,
+            (EventResult::Ignored, result) | (result, EventResult::Ignored) => result,
             (EventResult::Consumed(None), EventResult::Consumed(cb))
-            | (EventResult::Consumed(cb), EventResult::Consumed(None)) => {
-                EventResult::Consumed(cb)
+            | (EventResult::Consumed(cb), EventResult::Consumed(None)) => EventResult::Consumed(cb),
+            (EventResult::Consumed(Some(cb1)), EventResult::Consumed(Some(cb2))) => {
+                EventResult::with_cb(move |siv| {
+                    (cb1)(siv);
+                    (cb2)(siv);
+                })
             }
-            (
-                EventResult::Consumed(Some(cb1)),
-                EventResult::Consumed(Some(cb2)),
-            ) => EventResult::with_cb(move |siv| {
-                (cb1)(siv);
-                (cb2)(siv);
-            }),
         }
+    }
+
+    /// Combines the given event results into a single one.
+    ///
+    /// If `results` is empty or if all results are `Ignored`, returns `Ignored`.
+    ///
+    /// Otherwise, returns a callback that runs all callback in results.
+    pub fn combine(results: Vec<Self>) -> Self {
+        if results.iter().all(|result| !result.is_consumed()) {
+            return EventResult::Ignored;
+        }
+
+        // TODO: if all events are `Ignored` or `Consumed(None)`,
+        // returns `Consumed(None)` and save the allocation?
+        EventResult::with_cb_once(move |siv| {
+            for res in results {
+                res.process(siv);
+            }
+        })
     }
 }
 
@@ -412,13 +458,14 @@ impl Key {
             10 => Key::F10,
             11 => Key::F11,
             12 => Key::F12,
-            _ => panic!("unknown function key: F{}", n),
+            _ => panic!("unknown function key: F{n}"),
         }
     }
 }
 
 /// One of the buttons present on the mouse
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
+#[non_exhaustive]
 pub enum MouseButton {
     /// The left button, used for main actions.
     Left,
@@ -432,7 +479,7 @@ pub enum MouseButton {
     /// Fifth button if the mouse supports it.
     Button5,
 
-    // TODO: handle more buttons?
+    // TODO: handle more buttons? Wheel left/right?
     #[doc(hidden)]
     Other,
 }
@@ -458,9 +505,7 @@ impl MouseEvent {
     /// Returns `None` if `self` is `WheelUp` or `WheelDown`.
     pub fn button(self) -> Option<MouseButton> {
         match self {
-            MouseEvent::Press(btn)
-            | MouseEvent::Release(btn)
-            | MouseEvent::Hold(btn) => Some(btn),
+            MouseEvent::Press(btn) | MouseEvent::Release(btn) | MouseEvent::Hold(btn) => Some(btn),
             _ => None,
         }
     }
@@ -530,7 +575,7 @@ pub enum Event {
     /// An unknown event was received.
     Unknown(Vec<u8>),
 
-    // Maybe add a `Custom(Rc<Any>)` ?
+    // Maybe add a `Custom(Arc<Any>)` ?
 
     // Having a doc-hidden event prevents people from having exhaustive
     // matches, allowing us to add events in the future.
@@ -542,6 +587,16 @@ pub enum Event {
 }
 
 impl Event {
+    /// Returns the character, if `self` is a char event.
+    pub fn char(&self) -> Option<char> {
+        match *self {
+            Event::Char(c) => Some(c),
+            Event::AltChar(c) => Some(c),
+            Event::CtrlChar(c) => Some(c),
+            _ => None,
+        }
+    }
+
     /// Returns the position of the mouse, if `self` is a mouse event.
     pub fn mouse_position(&self) -> Option<Vec2> {
         if let Event::Mouse { position, .. } = *self {
@@ -551,7 +606,7 @@ impl Event {
         }
     }
 
-    /// Returns a mutable reference to the position of the mouse/
+    /// Returns a mutable reference to the position of the mouse.
     ///
     /// Returns `None` if `self` is not a mouse event.
     pub fn mouse_position_mut(&mut self) -> Option<&mut Vec2> {

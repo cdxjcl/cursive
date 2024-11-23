@@ -6,9 +6,11 @@
 [![Gitter chat](https://badges.gitter.im/gyscos/cursive.png)](https://gitter.im/cursive-rs/cursive)
 
 
-Cursive is a TUI (Text User Interface) library for rust. It uses ncurses by default, but [other backends are available](https://github.com/gyscos/cursive/wiki/Backends).
+Cursive is a TUI (Text User Interface) library for rust. It uses the [`crossterm`] backend by default, but [other backends are available](https://github.com/gyscos/cursive/wiki/Backends).
 
 It allows you to build rich user interfaces for terminal applications.
+
+[`crossterm`]: https://github.com/crossterm-rs/crossterm
 
 # [Documentation](http://docs.rs/cursive)
 
@@ -16,7 +18,7 @@ It is designed to be safe and easy to use:
 
 ```toml
 [dependencies]
-cursive = "0.20"
+cursive = "0.21"
 ```
 
 Or to use the latest git version:
@@ -25,8 +27,6 @@ Or to use the latest git version:
 [dependencies]
 cursive = { git = "https://github.com/gyscos/cursive" }
 ```
-
-([You will also need ncurses installed.](https://github.com/gyscos/cursive/wiki/Install-ncurses))
 
 ```rust,no_run
 use cursive::views::{Dialog, TextView};
@@ -45,17 +45,17 @@ fn main() {
 }
 ```
 
-[![Cursive dialog example](https://raw.githubusercontent.com/gyscos/cursive/main/doc/cursive_example.png)](cursive/examples/dialog.rs)
+[![Cursive dialog example](https://raw.githubusercontent.com/gyscos/cursive/main/doc/cursive_example.png)](https://github.com/gyscos/cursive/tree/main/cursive/examples/dialog.rs)
 
 Check out the other [examples](https://github.com/gyscos/cursive/tree/main/cursive/examples) to get these results, and more:
 
 <div>
-<a href="cursive/examples/lorem.rs"><img src="https://imgur.com/hW9M9MV.png" alt="lorem.rs example", width="48%" /></a>
-<a href="cursive/examples/menubar.rs"><img src="https://imgur.com/xx3lZPz.png" alt="menubar.rs example", width="48%" /></a>
-<a href="cursive/examples/select.rs"><img src="https://imgur.com/couty0n.png" alt="select.rs example", width="48%" /></a>
-<a href="cursive/examples/mines/"><img src="https://imgur.com/vNteYyy.png" alt="mines example", width="48%" /></a>
-<a href="cursive/examples/theme_manual.rs"><img src="https://i.imgur.com/I9V5KRi.png" alt="theme_manual.rs example", width="48%" /></a>
-<a href="cursive-syntect/examples/parse.rs"><img src="https://i.imgur.com/a8bfe5s.png" alt="syntect example" width="48%" /></a>
+<a href="https://github.com/gyscos/cursive/blob/main/cursive/examples/lorem.rs"><img src="https://imgur.com/hW9M9MV.png" alt="lorem.rs example", width="48%" /></a>
+<a href="https://github.com/gyscos/cursive/blob/main/cursive/examples/menubar.rs"><img src="https://imgur.com/xx3lZPz.png" alt="menubar.rs example", width="48%" /></a>
+<a href="https://github.com/gyscos/cursive/blob/main/cursive/examples/select.rs"><img src="https://imgur.com/couty0n.png" alt="select.rs example", width="48%" /></a>
+<a href="https://github.com/gyscos/cursive/blob/main/cursive/examples/mines/"><img src="https://imgur.com/vNteYyy.png" alt="mines example", width="48%" /></a>
+<a href="https://github.com/gyscos/cursive/blob/main/cursive/examples/theme_manual.rs"><img src="https://i.imgur.com/I9V5KRi.png" alt="theme_manual.rs example", width="48%" /></a>
+<a href="https://github.com/gyscos/cursive/blob/main/cursive-syntect/examples/parse.rs"><img src="https://i.imgur.com/a8bfe5s.png" alt="syntect example" width="48%" /></a>
 </div>
 
 _(Colors may depend on your terminal configuration.)_
@@ -83,6 +83,7 @@ Here are a few crates implementing new views for you to use:
 * [cursive_hexview](https://github.com/hellow554/cursive_hexview): A simple hexview.
 * [cursive_table_view](https://github.com/BonsaiDen/cursive_table_view): A basic table view component.
 * [cursive_tree_view](https://github.com/BonsaiDen/cursive_tree_view): A tree view implementation.
+* [cursive-hjkl](https://github.com/gamma-delta/cursive-hjkl): Wraps any view to use Vim-like `hjkl` controls.
 
 ## Showcases
 
@@ -92,19 +93,25 @@ Here are some cool applications using cursive:
 * [checkline](https://github.com/sixarm/checkline-rust-crate): Checkbox line picker from stdin to stdout.
 * [clock-cli](https://github.com/TianyiShi2001/clock-cli-rs): A clock with stopwatch and countdown timer functionalities.
 * [fui](https://github.com/xliiv/fui): Add CLI & form interface to your program.
+* [game2048-rs](https://github.com/genieCS/game2048-rs): a tui game2048 using Rust and cursive.
 * [git-branchless](https://github.com/arxanas/git-branchless): Branchless workflow for Git.
 * [grin-tui](https://github.com/mimblewimble/grin): Minimal implementation of the MimbleWimble protocol.
 * [kakikun](https://github.com/file-acomplaint/kakikun): A paint and ASCII art application for the terminal.
 * [launchk](https://github.com/mach-kernel/launchk): Manage launchd agents and daemons on macOS.
+* [markline](https://github.com/sixarm/markline): Marker-based line picker from stdin to stdout.
 * [mythra](https://github.com/deven96/mythra): CLI to search for music.
 * [ncspot](https://github.com/hrkfdn/ncspot): Cross-platform ncurses Spotify client.
 * [rbmenu-tui](https://github.com/DevHyperCoder/rbmenu-tui): A TUI for bookmark management.
+* [retris](https://github.com/genieCS/retris): A simple implementation of the classic tetris game.
 * [ripasso](https://github.com/cortex/ripasso): A simple password manager written in Rust.
 * [rusty-man](https://sr.ht/~ireas/rusty-man): Browse rustdoc documentation.
-* [saci-rs](https://gitlab.com/ihercowitz/saci-rs): Simple API Client Interface. 
+* [saci-rs](https://gitlab.com/ihercowitz/saci-rs): Simple API Client Interface.
 * [so](https://github.com/samtay/so): A terminal interface for Stack Overflow.
 * [sudoku-tui](https://github.com/TianyiShi2001/sudoku-tui): Play sudoku on the command line.
+* [tap](https://github.com/timdubbins/tap): An audio player for the terminal with fuzzy finder.
+* [ttyloop](https://github.com/gamma-delta/ttyloop): Clone of the mobile game Loop.
 * [wiki-tui](https://github.com/Builditluc/wiki-tui): A simple and easy to use Wikipedia Text User Interface
+* [glues](https://github.com/gluesql/glues): A simple note-taking app with Git, CSV, and JSON support
 
 ## Goals
 
@@ -134,4 +141,4 @@ There is initial support for [wide characters](https://en.wikipedia.org/wiki/CJK
 ## [Contributing](CONTRIBUTING.md)
 ## Alternatives
 
-See also [tui-rs](https://github.com/fdehau/tui-rs) - and a small [comparison page](https://github.com/gyscos/cursive/wiki/Cursive-vs-tui%E2%80%90rs).
+See also [ratatui](https://github.com/ratatui-org/ratatui) - and a small [comparison page](https://github.com/gyscos/cursive/wiki/Cursive-vs-tui%E2%80%90rs).

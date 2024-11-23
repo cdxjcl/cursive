@@ -120,20 +120,13 @@ where
         self.screen_mut().map(f)
     }
 
-    fn wrap_call_on_any<'a>(
-        &mut self,
-        selector: &Selector<'_>,
-        callback: AnyCb<'a>,
-    ) {
+    fn wrap_call_on_any(&mut self, selector: &Selector, callback: AnyCb) {
         for screen in &mut self.screens {
             screen.call_on_any(selector, callback);
         }
     }
 
-    fn wrap_focus_view(
-        &mut self,
-        selector: &Selector<'_>,
-    ) -> Result<EventResult, ViewNotFound> {
+    fn wrap_focus_view(&mut self, selector: &Selector) -> Result<EventResult, ViewNotFound> {
         for (i, child) in self.screens.iter_mut().enumerate() {
             if let Ok(res) = child.focus_view(selector) {
                 self.active_screen = i;
@@ -144,3 +137,5 @@ where
         Err(ViewNotFound)
     }
 }
+
+// TODO: blueprint?

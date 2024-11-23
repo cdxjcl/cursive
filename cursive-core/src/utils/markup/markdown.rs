@@ -6,11 +6,11 @@
 
 use std::borrow::Cow;
 
-use crate::theme::{Effect, Style};
+use crate::style::{Effect, Style};
 use crate::utils::markup::{StyledIndexedSpan, StyledString};
 use crate::utils::span::IndexedCow;
 
-use pulldown_cmark::{self, CowStr, Event, Tag};
+use pulldown_cmark::{self, CowStr, Event, Tag, TagEnd};
 use unicode_width::UnicodeWidthStr;
 
 /// Parses the given string as markdown text.
@@ -25,12 +25,22 @@ where
     StyledString::with_spans(input, spans)
 }
 
+// Convert a CowStr from pulldown into a regular Cow<str>
+// We lose the inline optimization, but oh well.
+fn cowvert(cow: CowStr) -> Cow<str> {
+    match cow {
+        CowStr::Borrowed(text) => Cow::Borrowed(text),
+        CowStr::Boxed(text) => Cow::Owned(text.into()),
+        CowStr::Inlined(text) => Cow::Owned(text.to_string()),
+    }
+}
+
 /// Iterator that parse a markdown text and outputs styled spans.
 pub struct Parser<'a> {
     first: bool,
     stack: Vec<Style>,
     input: &'a str,
-    parser: pulldown_cmark::Parser<'a, 'a>,
+    parser: pulldown_cmark::Parser<'a>,
 }
 
 impl<'a> Parser<'a> {
@@ -70,35 +80,25 @@ impl<'a> Iterator for Parser<'a> {
             match next {
                 Event::Start(tag) => match tag {
                     // Add to the stack!
-                    Tag::Emphasis => {
-                        self.stack.push(Style::from(Effect::Italic))
+                    Tag::Emphasis => self.stack.push(Style::from(Effect::Italic)),
+                    Tag::Heading { level, .. } => {
+                        return Some(self.literal(format!("{} ", heading(level as usize))))
                     }
-                    Tag::Heading(level, ..) => {
-                        return Some(
-                            self.literal(format!(
-                                "{} ",
-                                heading(level as usize)
-                            )),
-                        )
-                    }
-                    Tag::BlockQuote => return Some(self.literal("> ")),
-                    Tag::Link(_, _, _) => return Some(self.literal("[")),
+                    Tag::BlockQuote(_) => return Some(self.literal("> ")),
+                    Tag::Link {
+                        dest_url, title, ..
+                    } => return Some(self.literal(format!("[{title}]({dest_url})"))),
                     Tag::CodeBlock(_) => return Some(self.literal("```")),
                     Tag::Strong => self.stack.push(Style::from(Effect::Bold)),
-                    Tag::Paragraph if !self.first => {
-                        return Some(self.literal("\n\n"))
-                    }
+                    Tag::Paragraph if !self.first => return Some(self.literal("\n\n")),
                     _ => (),
                 },
                 Event::End(tag) => match tag {
                     // Remove from stack!
-                    Tag::Paragraph if self.first => self.first = false,
-                    Tag::Heading(..) => return Some(self.literal("\n\n")),
-                    Tag::Link(_, link, _) => {
-                        return Some(self.literal(format!("]({})", link)))
-                    }
-                    Tag::CodeBlock(_) => return Some(self.literal("```")),
-                    Tag::Emphasis | Tag::Strong => {
+                    TagEnd::Paragraph if self.first => self.first = false,
+                    TagEnd::Heading(..) => return Some(self.literal("\n\n")),
+                    TagEnd::CodeBlock => return Some(self.literal("```")),
+                    TagEnd::Emphasis | TagEnd::Strong => {
                         self.stack.pop().unwrap();
                     }
                     _ => (),
@@ -108,14 +108,13 @@ impl<'a> Iterator for Parser<'a> {
                 Event::HardBreak => return Some(self.literal("\n")),
                 // Treat all text the same
                 Event::FootnoteReference(text)
+                | Event::InlineHtml(text)
                 | Event::Html(text)
                 | Event::Text(text)
-                | Event::Code(text) => {
-                    let text = match text {
-                        CowStr::Boxed(text) => Cow::Owned(text.into()),
-                        CowStr::Borrowed(text) => Cow::Borrowed(text),
-                        CowStr::Inlined(text) => Cow::Owned(text.to_string()),
-                    };
+                | Event::Code(text)
+                | Event::InlineMath(text)
+                | Event::DisplayMath(text) => {
+                    let text = cowvert(text);
                     let width = text.width();
                     // Return something!
                     return Some(StyledIndexedSpan {
@@ -152,8 +151,7 @@ Attention
 ====
 I *really* love __Cursive__!";
         let spans = parse_spans(input);
-        let spans: Vec<_> =
-            spans.iter().map(|span| span.resolve(input)).collect();
+        let spans: Vec<_> = spans.iter().map(|span| span.resolve(input)).collect();
 
         // println!("{:?}", spans);
         assert_eq!(
@@ -171,7 +169,7 @@ I *really* love __Cursive__!";
                 },
                 Span {
                     content: "\n\n",
-                    width: 0,
+                    width: "\n\n".width(),
                     attr: &Style::none(),
                 },
                 Span {

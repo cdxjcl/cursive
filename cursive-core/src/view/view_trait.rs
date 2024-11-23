@@ -15,13 +15,13 @@ pub struct ViewNotFound;
 pub struct CannotFocus;
 
 impl std::fmt::Display for ViewNotFound {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "View could not be found")
     }
 }
 
 impl std::fmt::Display for CannotFocus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "View does not take focus")
     }
 }
@@ -31,7 +31,7 @@ impl std::error::Error for ViewNotFound {}
 /// Main trait defining a view behaviour.
 ///
 /// This is what you should implement to define a custom View.
-pub trait View: Any + AnyView {
+pub trait View: Any + AnyView + Send + Sync {
     /// Draws the view with the given printer (includes bounds) and focus.
     ///
     /// This is the only *required* method to implement.
@@ -43,7 +43,7 @@ pub trait View: Any + AnyView {
     ///
     /// View groups should propagate the information to their children.
     ///
-    /// At this point, the given size is final and cannot be negociated.
+    /// At this point, the given size is final and cannot be negotiated.
     /// It is guaranteed to be the size available for the call to `draw()`.
     fn layout(&mut self, _: Vec2) {}
 
@@ -105,7 +105,7 @@ pub trait View: Any + AnyView {
     /// View groups should implement this to forward the call to each children.
     ///
     /// Default implementation is a no-op.
-    fn call_on_any<'a>(&mut self, _: &Selector<'_>, _: AnyCb<'a>) {}
+    fn call_on_any(&mut self, _: &Selector, _: AnyCb) {}
 
     /// Moves the focus to the view identified by the given selector.
     ///
@@ -113,10 +113,7 @@ pub trait View: Any + AnyView {
     /// A callback may be included, it should be run on `&mut Cursive`.
     ///
     /// Default implementation simply returns `Err(ViewNotFound)`.
-    fn focus_view(
-        &mut self,
-        _: &Selector<'_>,
-    ) -> Result<EventResult, ViewNotFound> {
+    fn focus_view(&mut self, _: &Selector) -> Result<EventResult, ViewNotFound> {
         Err(ViewNotFound)
     }
 
@@ -128,10 +125,7 @@ pub trait View: Any + AnyView {
     ///
     /// Returns `Ok(_)` if the focus was taken.
     /// Returns `Err(_)` if this view does not take focus (default implementation).
-    fn take_focus(
-        &mut self,
-        source: Direction,
-    ) -> Result<EventResult, CannotFocus> {
+    fn take_focus(&mut self, source: Direction) -> Result<EventResult, CannotFocus> {
         let _ = source;
 
         Err(CannotFocus)

@@ -1,13 +1,13 @@
 use crate::{
     direction::Direction,
     event::{Event, EventResult, Key, MouseButton, MouseEvent},
-    theme::ColorStyle,
+    style::PaletteStyle,
     view::{CannotFocus, View},
     Cursive, Printer, Vec2, With,
 };
-use std::rc::Rc;
+use std::sync::Arc;
 
-type Callback = dyn Fn(&mut Cursive, bool);
+type Callback = dyn Fn(&mut Cursive, bool) + Send + Sync;
 
 /// Checkable box.
 ///
@@ -24,7 +24,7 @@ pub struct Checkbox {
     checked: bool,
     enabled: bool,
 
-    on_change: Option<Rc<Callback>>,
+    on_change: Option<Arc<Callback>>,
 }
 
 new_default!(Checkbox);
@@ -42,18 +42,19 @@ impl Checkbox {
     }
 
     /// Sets a callback to be used when the state changes.
-    pub fn set_on_change<F: 'static + Fn(&mut Cursive, bool)>(
+    #[crate::callback_helpers]
+    pub fn set_on_change<F: 'static + Fn(&mut Cursive, bool) + Send + Sync>(
         &mut self,
         on_change: F,
     ) {
-        self.on_change = Some(Rc::new(on_change));
+        self.on_change = Some(Arc::new(on_change));
     }
 
     /// Sets a callback to be used when the state changes.
     ///
     /// Chainable variant.
     #[must_use]
-    pub fn on_change<F: 'static + Fn(&mut Cursive, bool)>(
+    pub fn on_change<F: 'static + Fn(&mut Cursive, bool) + Send + Sync>(
         self,
         on_change: F,
     ) -> Self {
@@ -117,7 +118,7 @@ impl Checkbox {
     pub fn set_checked(&mut self, checked: bool) -> EventResult {
         self.checked = checked;
         if let Some(ref on_change) = self.on_change {
-            let on_change = Rc::clone(on_change);
+            let on_change = Arc::clone(on_change);
             EventResult::with_cb(move |s| on_change(s, checked))
         } else {
             EventResult::Consumed(None)
@@ -147,20 +148,15 @@ impl View for Checkbox {
         Vec2::new(3, 1)
     }
 
-    fn take_focus(
-        &mut self,
-        _: Direction,
-    ) -> Result<EventResult, CannotFocus> {
+    fn take_focus(&mut self, _: Direction) -> Result<EventResult, CannotFocus> {
         self.enabled.then(EventResult::consumed).ok_or(CannotFocus)
     }
 
     fn draw(&self, printer: &Printer) {
         if self.enabled && printer.enabled {
-            printer.with_selection(printer.focused, |printer| {
-                self.draw_internal(printer)
-            });
+            printer.with_selection(printer.focused, |printer| self.draw_internal(printer));
         } else {
-            printer.with_color(ColorStyle::secondary(), |printer| {
+            printer.with_style(PaletteStyle::Secondary, |printer| {
                 self.draw_internal(printer)
             });
         }
@@ -180,4 +176,12 @@ impl View for Checkbox {
             _ => EventResult::Ignored,
         }
     }
+}
+
+#[crate::blueprint(Checkbox::new())]
+struct Blueprint {
+    on_change: Option<_>,
+
+    checked: Option<bool>,
+    enabled: Option<bool>,
 }

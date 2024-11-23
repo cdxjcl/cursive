@@ -258,9 +258,7 @@ pub fn on_event<Model: ?Sized>(
                 } if get_scroller(model).get_show_scrollbars()
                     && position
                         .checked_sub(offset)
-                        .map(|position| {
-                            get_scroller(model).start_drag(position)
-                        })
+                        .map(|position| get_scroller(model).start_drag(position))
                         .unwrap_or(false) =>
                 {
                     // Just consume the event.
@@ -279,19 +277,13 @@ pub fn on_event<Model: ?Sized>(
                 } => {
                     get_scroller(model).release_grab();
                 }
-                Event::Key(Key::Home)
-                    if get_scroller(model).is_enabled().any() =>
-                {
-                    let actions: XY<fn(&mut scroll::Core)> = XY::new(
-                        scroll::Core::scroll_to_left,
-                        scroll::Core::scroll_to_top,
-                    );
+                Event::Key(Key::Home) if get_scroller(model).is_enabled().any() => {
+                    let actions: XY<fn(&mut scroll::Core)> =
+                        XY::new(scroll::Core::scroll_to_left, scroll::Core::scroll_to_top);
                     let scroller = get_scroller(model);
                     actions.run_if(scroller.is_enabled(), |a| a(scroller));
                 }
-                Event::Key(Key::End)
-                    if get_scroller(model).is_enabled().any() =>
-                {
+                Event::Key(Key::End) if get_scroller(model).is_enabled().any() => {
                     let actions: XY<fn(&mut scroll::Core)> = XY::new(
                         scroll::Core::scroll_to_right,
                         scroll::Core::scroll_to_bottom,
@@ -304,16 +296,14 @@ pub fn on_event<Model: ?Sized>(
                 {
                     get_scroller(model).scroll_up(1);
                 }
-                Event::Key(Key::PageUp)
-                    if get_scroller(model).can_scroll_up() =>
-                {
-                    get_scroller(model).scroll_up(5);
+                Event::Key(Key::PageUp) if get_scroller(model).can_scroll_up() => {
+                    let scroller = get_scroller(model);
+                    scroller.scroll_up(scroller.last_available_size().y);
                 }
-                Event::Key(Key::PageDown)
-                    if get_scroller(model).can_scroll_down() =>
-                {
+                Event::Key(Key::PageDown) if get_scroller(model).can_scroll_down() => {
                     // No `min` check here - we allow going over the edge.
-                    get_scroller(model).scroll_down(5);
+                    let scroller = get_scroller(model);
+                    scroller.scroll_down(scroller.last_available_size().y);
                 }
                 Event::Ctrl(Key::Down) | Event::Key(Key::Down)
                     if get_scroller(model).can_scroll_down() =>
@@ -323,19 +313,20 @@ pub fn on_event<Model: ?Sized>(
                 Event::Ctrl(Key::Left) | Event::Key(Key::Left)
                     if get_scroller(model).can_scroll_left() =>
                 {
-                    get_scroller(model).scroll_left(1);
+                    let scroller = get_scroller(model);
+                    scroller.scroll_left(scroller.last_available_size().x);
                 }
                 Event::Ctrl(Key::Right) | Event::Key(Key::Right)
                     if get_scroller(model).can_scroll_right() =>
                 {
-                    get_scroller(model).scroll_right(1);
+                    let scroller = get_scroller(model);
+                    scroller.scroll_right(scroller.last_available_size().x);
                 }
                 _ => return EventResult::Ignored,
             };
 
             // We just scrolled manually, so reset the scroll strategy.
-            get_scroller(model)
-                .set_scroll_strategy(scroll::ScrollStrategy::KeepRow);
+            get_scroller(model).set_scroll_strategy(scroll::ScrollStrategy::KeepRow);
 
             // TODO: return callback on_scroll?
             EventResult::Consumed(None)

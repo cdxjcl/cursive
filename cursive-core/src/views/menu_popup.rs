@@ -3,15 +3,14 @@ use crate::{
     event::{Callback, Event, EventResult, Key, MouseButton, MouseEvent},
     menu,
     rect::Rect,
-    theme::ColorStyle,
+    style::PaletteStyle,
     view::scroll,
     view::{Position, View},
     views::OnEventView,
     Cursive, Printer, Vec2, With,
 };
 use std::cmp::min;
-use std::rc::Rc;
-use unicode_width::UnicodeWidthStr;
+use std::sync::Arc;
 
 /// Popup that shows a list of items.
 ///
@@ -21,7 +20,7 @@ use unicode_width::UnicodeWidthStr;
 /// [1]: crate::views::SelectView::popup()
 /// [2]: crate::Cursive::menubar()
 pub struct MenuPopup {
-    menu: Rc<menu::Tree>,
+    menu: Arc<menu::Tree>,
     focus: usize,
     scroll_core: scroll::Core,
     align: Align,
@@ -36,7 +35,9 @@ impl_scroller!(MenuPopup::scroll_core);
 
 impl MenuPopup {
     /// Creates a new `MenuPopup` using the given menu tree.
-    pub fn new(menu: Rc<menu::Tree>) -> Self {
+    ///
+    /// The menu tree cannot be modified after this view has been created.
+    pub fn new(menu: Arc<menu::Tree>) -> Self {
         MenuPopup {
             menu,
             focus: 0,
@@ -88,18 +89,18 @@ impl MenuPopup {
 
     /// Sets a callback to be used when this view is actively dismissed.
     ///
-    /// (When the user hits <ESC>)
+    /// (When the user hits `<ESC>`)
     ///
     /// Chainable variant.
     #[must_use]
-    pub fn on_dismiss<F: 'static + Fn(&mut Cursive)>(self, f: F) -> Self {
+    pub fn on_dismiss<F: 'static + Fn(&mut Cursive) + Send + Sync>(self, f: F) -> Self {
         self.with(|s| s.set_on_dismiss(f))
     }
 
     /// Sets a callback to be used when this view is actively dismissed.
     ///
-    /// (When the user hits <ESC>)
-    pub fn set_on_dismiss<F: 'static + Fn(&mut Cursive)>(&mut self, f: F) {
+    /// (When the user hits `<ESC>`)
+    pub fn set_on_dismiss<F: 'static + Fn(&mut Cursive) + Send + Sync>(&mut self, f: F) {
         self.on_dismiss = Some(Callback::from_fn(f));
     }
 
@@ -111,7 +112,7 @@ impl MenuPopup {
     ///
     /// Chainable variant.
     #[must_use]
-    pub fn on_action<F: 'static + Fn(&mut Cursive)>(self, f: F) -> Self {
+    pub fn on_action<F: 'static + Fn(&mut Cursive) + Send + Sync>(self, f: F) -> Self {
         self.with(|s| s.set_on_action(f))
     }
 
@@ -120,15 +121,26 @@ impl MenuPopup {
     /// Will also be called if a leaf from a subtree is activated.
     ///
     /// Usually used to hide the parent view.
-    pub fn set_on_action<F: 'static + Fn(&mut Cursive)>(&mut self, f: F) {
+    pub fn set_on_action<F: 'static + Fn(&mut Cursive) + Send + Sync>(&mut self, f: F) {
         self.on_action = Some(Callback::from_fn(f));
     }
 
-    fn scroll_up(&mut self, mut n: usize, cycle: bool) {
+    // Scroll up by `n` rows.
+    //
+    // # Panics
+    //
+    // If `self.menu.children.is_empty()`.
+    fn scroll_up(&mut self, mut n: usize, mut cycle: bool) {
+        if self.menu.is_empty() {
+            return;
+        }
+
         while n > 0 {
             if self.focus > 0 {
                 self.focus -= 1;
             } else if cycle {
+                // Only cycle once to prevent endless loop
+                cycle = false;
                 self.focus = self.menu.children.len() - 1;
             } else {
                 break;
@@ -140,11 +152,22 @@ impl MenuPopup {
         }
     }
 
-    fn scroll_down(&mut self, mut n: usize, cycle: bool) {
+    // Scroll down by `n` rows.
+    //
+    // # Panics
+    //
+    // If `self.menu.children.is_empty()`.
+    fn scroll_down(&mut self, mut n: usize, mut cycle: bool) {
+        if self.menu.is_empty() {
+            return;
+        }
+
         while n > 0 {
             if self.focus + 1 < self.menu.children.len() {
                 self.focus += 1;
             } else if cycle {
+                // Only cycle once to prevent endless loop
+                cycle = false;
                 self.focus = 0;
             } else {
                 // Stop if we're at the bottom.
@@ -157,6 +180,11 @@ impl MenuPopup {
         }
     }
 
+    // Prepare the callback for when an item has been picked.
+    //
+    // # Panics
+    //
+    // If `self.menu.children.is_empty()`.
     fn submit(&mut self) -> EventResult {
         match self.menu.children[self.focus] {
             menu::Item::Leaf { ref cb, .. } => {
@@ -188,8 +216,8 @@ impl MenuPopup {
         })
     }
 
-    fn make_subtree_cb(&self, tree: &Rc<menu::Tree>) -> EventResult {
-        let tree = Rc::clone(tree);
+    fn make_subtree_cb(&self, tree: &Arc<menu::Tree>) -> EventResult {
+        let tree = Arc::clone(tree);
         let max_width = 4 + self
             .menu
             .children
@@ -204,17 +232,15 @@ impl MenuPopup {
             let action_cb = action_cb.clone();
             s.screen_mut().add_layer_at(
                 Position::parent(offset),
-                OnEventView::new(MenuPopup::new(Rc::clone(&tree)).on_action(
-                    move |s| {
-                        // This will happen when the subtree popup
-                        // activates something;
-                        // First, remove ourselve.
-                        s.pop_layer();
-                        if let Some(ref action_cb) = action_cb {
-                            action_cb.clone()(s);
-                        }
-                    },
-                ))
+                OnEventView::new(MenuPopup::new(Arc::clone(&tree)).on_action(move |s| {
+                    // This will happen when the subtree popup
+                    // activates something;
+                    // First, remove ourself.
+                    s.pop_layer();
+                    if let Some(ref action_cb) = action_cb {
+                        action_cb.clone()(s);
+                    }
+                }))
                 .on_event(Key::Left, |s| {
                     s.pop_layer();
                 }),
@@ -226,6 +252,11 @@ impl MenuPopup {
     ///
     /// Here the event has already been relativized. This means `y=0` points to the first item.
     fn inner_on_event(&mut self, event: Event) -> EventResult {
+        // If there is no item, nothing can be done.
+        if self.menu.children.is_empty() {
+            return EventResult::Ignored;
+        }
+
         match event {
             Event::Key(Key::Up) => self.scroll_up(1, true),
             Event::Key(Key::PageUp) => self.scroll_up(5, false),
@@ -233,23 +264,15 @@ impl MenuPopup {
             Event::Key(Key::PageDown) => self.scroll_down(5, false),
 
             Event::Key(Key::Home) => self.focus = 0,
-            Event::Key(Key::End) => {
-                self.focus = self.menu.children.len().saturating_sub(1)
-            }
+            Event::Key(Key::End) => self.focus = self.menu.children.len().saturating_sub(1),
 
-            Event::Key(Key::Right)
-                if self.menu.children[self.focus].is_subtree() =>
-            {
+            Event::Key(Key::Right) if self.menu.children[self.focus].is_subtree() => {
                 return match self.menu.children[self.focus] {
-                    menu::Item::Subtree { ref tree, .. } => {
-                        self.make_subtree_cb(tree)
-                    }
+                    menu::Item::Subtree { ref tree, .. } => self.make_subtree_cb(tree),
                     _ => unreachable!("Child is a subtree"),
                 };
             }
-            Event::Key(Key::Enter)
-                if self.menu.children[self.focus].is_enabled() =>
-            {
+            Event::Key(Key::Enter) if self.menu.children[self.focus].is_enabled() => {
                 return self.submit();
             }
             Event::Mouse {
@@ -261,9 +284,7 @@ impl MenuPopup {
                 if let Some(position) = position.checked_sub(offset) {
                     // Now `position` is relative to the top-left of the content.
                     let focus = position.y;
-                    if focus < self.menu.len()
-                        && self.menu.children[focus].is_enabled()
-                    {
+                    if focus < self.menu.len() && self.menu.children[focus].is_enabled() {
                         self.focus = focus;
                     }
                 }
@@ -329,7 +350,7 @@ impl View for MenuPopup {
         scroll::draw_box_frame(
             self,
             printer,
-            |s, y| s.menu.children[y].is_delimiter(),
+            |s, y| s.menu.children.get(y).map_or(false, |c| c.is_delimiter()),
             |_s, _x| false,
         );
 
@@ -338,16 +359,15 @@ impl View for MenuPopup {
 
         scroll::draw_lines(self, &printer, |s, printer, i| {
             let item = &s.menu.children[i];
-            let enabled =
-                printer.enabled && (item.is_enabled() || item.is_delimiter());
-            let color = if !enabled {
-                ColorStyle::secondary()
+            let enabled = printer.enabled && (item.is_enabled() || item.is_delimiter());
+            let style = if !enabled {
+                PaletteStyle::Secondary
             } else if i == s.focus {
-                ColorStyle::highlight()
+                PaletteStyle::Highlight
             } else {
-                ColorStyle::primary()
+                PaletteStyle::Primary
             };
-            printer.with_style(color, |printer| {
+            printer.with_style(style, |printer| {
                 match *item {
                     menu::Item::Delimiter => {
                         // printer.print_hdelim((0, 0), printer.size.x)
@@ -358,7 +378,7 @@ impl View for MenuPopup {
                             return;
                         }
                         printer.print_hline((0, 0), printer.size.x, " ");
-                        printer.print((1, 0), label);
+                        printer.print_styled((1, 0), label);
                         let x = printer.size.x.saturating_sub(3);
                         printer.print((x, 0), ">>");
                     }
@@ -367,7 +387,7 @@ impl View for MenuPopup {
                             return;
                         }
                         printer.print_hline((0, 0), printer.size.x, " ");
-                        printer.print((1, 0), label);
+                        printer.print_styled((1, 0), label);
                     }
                 }
             });
@@ -406,10 +426,7 @@ impl View for MenuPopup {
                     // They can be on the border, or entirely outside of the popup.
 
                     // Mouse clicks outside of the popup should dismiss it.
-                    if !position.fits_in_rect(
-                        offset,
-                        self.scroll_core.last_outer_size() + (2, 2),
-                    ) {
+                    if !position.fits_in_rect(offset, self.scroll_core.last_outer_size() + (2, 2)) {
                         let dismiss_cb = self.on_dismiss.clone();
                         return EventResult::with_cb(move |s| {
                             if let Some(ref cb) = dismiss_cb {

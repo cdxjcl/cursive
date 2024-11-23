@@ -22,9 +22,15 @@ pub struct SpannedStr<'a, T> {
     spans: &'a [IndexedSpan<T>],
 }
 
+// What we don't have: (&str, Vec<IndexedSpan<T>>)
+// To style an existing text.
+// Maybe replace `String` in `SpannedString` with `<S>`?
+
 /// Describes an object that appears like a `SpannedStr`.
 pub trait SpannedText {
     /// Type of span returned by `SpannedText::spans()`.
+    ///
+    /// Most of the time it'll be `IndexedSpan`.
     type S: AsRef<IndexedCow>;
 
     /// Returns the source text.
@@ -110,16 +116,19 @@ where
     T: 'a,
 {
     /// Creates a new `SpannedStr` from the given references.
-    pub fn new(source: &'a str, spans: &'a [IndexedSpan<T>]) -> Self {
+    pub const fn new(source: &'a str, spans: &'a [IndexedSpan<T>]) -> Self {
         SpannedStr { source, spans }
+    }
+
+    /// Creates a new empty `SpannedStr`.
+    pub const fn empty() -> Self {
+        Self::new("", &[])
     }
 
     /// Gives access to the parsed styled spans.
     pub fn spans<'b>(
         &'b self,
-    ) -> impl DoubleEndedIterator<Item = Span<'a, T>>
-           + ExactSizeIterator<Item = Span<'a, T>>
-           + 'b
+    ) -> impl DoubleEndedIterator<Item = Span<'a, T>> + ExactSizeIterator<Item = Span<'a, T>> + 'b
     where
         'a: 'b,
     {
@@ -128,20 +137,39 @@ where
     }
 
     /// Returns a reference to the indexed spans.
-    pub fn spans_raw(&self) -> &'a [IndexedSpan<T>] {
+    pub const fn spans_raw(&self) -> &'a [IndexedSpan<T>] {
         self.spans
     }
 
     /// Returns a reference to the source (non-parsed) string.
-    pub fn source(&self) -> &'a str {
+    pub const fn source(&self) -> &'a str {
         self.source
     }
 
     /// Returns `true` if `self` is empty.
     ///
     /// Can be caused by an empty source, or no span.
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.source.is_empty() || self.spans.is_empty()
+    }
+
+    /// Returns the width taken by this string.
+    ///
+    /// This is the sum of the width of each span.
+    pub fn width(&self) -> usize {
+        self.spans().map(|s| s.width).sum()
+    }
+
+    /// Create a new `SpannedStr` by borrowing from a `SpannedText`.
+    pub fn from_spanned_text<'b, S>(text: &'b S) -> Self
+    where
+        S: SpannedText<S = IndexedSpan<T>>,
+        'b: 'a,
+    {
+        Self {
+            source: text.source(),
+            spans: text.spans(),
+        }
     }
 }
 
@@ -170,6 +198,16 @@ impl<T> SpannedString<T> {
         Self::with_spans(String::new(), Vec::new())
     }
 
+    /// Concatenates all styled strings.
+    ///
+    /// Same as `spans.into_iter().collect()`.
+    pub fn concatenate<I>(spans: I) -> Self
+    where
+        I: IntoIterator<Item = Self>,
+    {
+        spans.into_iter().collect()
+    }
+
     /// Creates a new `SpannedString` manually.
     ///
     /// It is not recommended to use this directly.
@@ -181,7 +219,7 @@ impl<T> SpannedString<T> {
         let source = source.into();
 
         // Make sure the spans are within bounds.
-        // This should disapear when compiled in release mode.
+        // This should disappear when compiled in release mode.
         for span in &spans {
             if let IndexedCow::Borrowed { end, .. } = span.content {
                 assert!(end <= source.len());
@@ -191,7 +229,34 @@ impl<T> SpannedString<T> {
         SpannedString { source, spans }
     }
 
+    /// Compacts and simplifies this string, resulting in a canonical form.
+    ///
+    /// If two styled strings represent the same styled text, they should have equal canonical
+    /// forms.
+    ///
+    /// (The PartialEq implementation for StyledStrings requires both the source and spans to be
+    /// equals, so non-visible changes such as text in the source between spans could cause
+    /// StyledStrings to evaluate as non-equal.)
+    pub fn canonicalize(&mut self)
+    where
+        T: PartialEq,
+    {
+        self.compact();
+        self.simplify();
+    }
+
+    /// Returns the canonical form of this styled string.
+    pub fn canonical(mut self) -> Self
+    where
+        T: PartialEq,
+    {
+        self.canonicalize();
+        self
+    }
+
     /// Compacts the source to only include the spans content.
+    ///
+    /// This does not change the number of spans, but changes the source.
     pub fn compact(&mut self) {
         // Prepare the new source
         let mut source = String::new();
@@ -207,6 +272,36 @@ impl<T> SpannedString<T> {
         }
 
         self.source = source;
+    }
+
+    /// Attemps to reduce the number of spans by merging consecutive similar ones.
+    pub fn simplify(&mut self)
+    where
+        T: PartialEq,
+    {
+        // Now, merge consecutive similar spans.
+        let mut i = 0;
+        while i + 1 < self.spans.len() {
+            let left = &self.spans[i];
+            let right = &self.spans[i + 1];
+            if left.attr != right.attr {
+                i += 1;
+                continue;
+            }
+
+            let (_, left_end) = left.content.as_borrowed().unwrap();
+            let (right_start, right_end) = right.content.as_borrowed().unwrap();
+            let right_width = right.width;
+
+            if left_end != right_start {
+                i += 1;
+                continue;
+            }
+
+            *self.spans[i].content.as_borrowed_mut().unwrap().1 = right_end;
+            self.spans[i].width += right_width;
+            self.spans.remove(i + 1);
+        }
     }
 
     /// Shrink the source to discard any unused suffix.
@@ -295,8 +390,7 @@ impl<T> SpannedString<T> {
     /// Iterates on the resolved spans.
     pub fn spans(
         &self,
-    ) -> impl DoubleEndedIterator<Item = Span<'_, T>>
-           + ExactSizeIterator<Item = Span<'_, T>> {
+    ) -> impl DoubleEndedIterator<Item = Span<'_, T>> + ExactSizeIterator<Item = Span<'_, T>> {
         let source = &self.source;
         self.spans.iter().map(move |span| span.resolve(source))
     }
@@ -331,6 +425,11 @@ impl<T> SpannedString<T> {
         &self.source
     }
 
+    /// Get the source, consuming this `StyledString`.
+    pub fn into_source(self) -> String {
+        self.source
+    }
+
     /// Returns `true` if self is empty.
     pub fn is_empty(&self) -> bool {
         self.source.is_empty() || self.spans.is_empty()
@@ -345,9 +444,9 @@ impl<T> SpannedString<T> {
 }
 
 impl<T> FromIterator<SpannedString<T>> for SpannedString<T> {
-    fn from_iter<I: IntoIterator<Item = SpannedString<T>>>(
-        iter: I,
-    ) -> SpannedString<T> {
+    fn from_iter<I: IntoIterator<Item = SpannedString<T>>>(iter: I) -> SpannedString<T> {
+        // It would look simpler to always fold(), starting with an empty string.
+        // But this here lets us re-use the allocation from the first string, which is a small win.
         let mut iter = iter.into_iter();
         if let Some(first) = iter.next() {
             iter.fold(first, |mut acc, s| {
@@ -512,9 +611,40 @@ impl IndexedCow {
         }
     }
 
+    /// Gets a new `IndexedCow` for the given range.
+    ///
+    /// The given range is relative to this span.
+    pub fn subcow(&self, range: std::ops::Range<usize>) -> Self {
+        match *self {
+            IndexedCow::Borrowed { start, end } => {
+                if start + range.end > end {
+                    panic!("Attempting to get a subcow larger than itself!");
+                }
+                IndexedCow::Borrowed {
+                    start: start + range.start,
+                    end: start + range.end,
+                }
+            }
+            IndexedCow::Owned(ref content) => IndexedCow::Owned(content[range].into()),
+        }
+    }
+
     /// Return the `(start, end)` indexes if `self` is `IndexedCow::Borrowed`.
     pub fn as_borrowed(&self) -> Option<(usize, usize)> {
         if let IndexedCow::Borrowed { start, end } = *self {
+            Some((start, end))
+        } else {
+            None
+        }
+    }
+
+    /// Return the `(start, end)` indexes if `self` is `IndexedCow::Borrowed`.
+    pub fn as_borrowed_mut(&mut self) -> Option<(&mut usize, &mut usize)> {
+        if let IndexedCow::Borrowed {
+            ref mut start,
+            ref mut end,
+        } = *self
+        {
             Some((start, end))
         } else {
             None
@@ -595,5 +725,29 @@ impl IndexedCow {
             *start = start.saturating_sub(offset);
             *end = end.saturating_sub(offset);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::style::Style;
+
+    #[test]
+    fn test_spanned_str_width() {
+        let spans = vec![
+            IndexedSpan {
+                content: IndexedCow::Borrowed { start: 0, end: 5 },
+                attr: Style::default(),
+                width: 5,
+            },
+            IndexedSpan {
+                content: IndexedCow::Borrowed { start: 6, end: 11 },
+                attr: Style::default(),
+                width: 5,
+            },
+        ];
+        let spanned_str = SpannedStr::new("Hello World", &spans);
+        assert_eq!(spanned_str.width(), 10);
     }
 }

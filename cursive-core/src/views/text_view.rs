@@ -1,12 +1,11 @@
+use parking_lot::Mutex;
 use std::ops::Deref;
 use std::sync::Arc;
-use std::sync::{Mutex, MutexGuard};
 
-use owning_ref::{ArcRef, OwningHandle};
 use unicode_width::UnicodeWidthStr;
 
 use crate::align::*;
-use crate::theme::{Effect, Style};
+use crate::style::{Effect, StyleType};
 use crate::utils::lines::spans::{LinesIterator, Row};
 use crate::utils::markup::StyledString;
 use crate::view::{SizeCache, View};
@@ -62,13 +61,7 @@ impl TextContent {
 /// This can be deref'ed into a [`StyledString`].
 ///
 /// [`StyledString`]: ../utils/markup/type.StyledString.html
-///
-/// This keeps the content locked. Do not store this!
 pub struct TextContentRef {
-    _handle: OwningHandle<
-        ArcRef<Mutex<TextContentInner>>,
-        MutexGuard<'static, TextContentInner>,
-    >,
     // We also need to keep a copy of Arc so `deref` can return
     // a reference to the `StyledString`
     data: Arc<StyledString>,
@@ -126,7 +119,7 @@ impl TextContent {
     where
         F: FnOnce(&mut TextContentInner) -> O,
     {
-        let mut content = self.content.lock().unwrap();
+        let mut content = self.content.lock();
 
         let out = f(&mut content);
 
@@ -136,14 +129,18 @@ impl TextContent {
     }
 }
 
-/// Internel representation of the content for a `TextView`.
+/// Internal representation of the content for a `TextView`.
 ///
 /// This is mostly just a `StyledString`.
 ///
 /// Can be shared (through a `Arc<Mutex>`).
 struct TextContentInner {
-    // content: String,
+    // This is what `set_content` changes.
     content_value: InnerContentType,
+
+    // This is what is actually being used to draw.
+    //
+    // This is cloned (ref-counted) from content_value when computing rows.
     content_cache: InnerContentType,
 
     // We keep the cache here so it can be busted when we change the content.
@@ -153,16 +150,8 @@ struct TextContentInner {
 impl TextContentInner {
     /// From a shareable content (Arc + Mutex), return a
     fn get_content(content: &Arc<Mutex<TextContentInner>>) -> TextContentRef {
-        let arc_ref: ArcRef<Mutex<TextContentInner>> =
-            ArcRef::new(Arc::clone(content));
-
-        let _handle = OwningHandle::new_with_fn(arc_ref, |mutex| unsafe {
-            (*mutex).lock().unwrap()
-        });
-
-        let data = Arc::clone(&_handle.content_value);
-
-        TextContentRef { _handle, data }
+        let data = Arc::clone(&content.lock().content_value);
+        TextContentRef { data }
     }
 
     fn is_cache_valid(&self, size: Vec2) -> bool {
@@ -189,20 +178,35 @@ impl TextContentInner {
 /// siv.add_layer(TextView::new("Hello world!"));
 /// ```
 pub struct TextView {
-    // content: String,
+    // Possibly shared content
     content: TextContent,
+
+    // Pre-computed rows for the content, based on the last view size.
     rows: Vec<Row>,
 
+    // Text alignment
     align: Align,
 
-    style: Style,
+    // Default style for the text.
+    //
+    // Note that the text itself can be styled, which will override this.
+    style: StyleType,
 
     // True if we can wrap long lines.
     wrap: bool,
 
-    // ScrollBase make many scrolling-related things easier
+    // Last requested width.
+    //
+    // Usually the longest row, but if a row had to be wrapped, it may be a bit larger.
     width: Option<usize>,
+    // Selection?
+    // selection: Option<Selection>,
 }
+
+// struct Selection {
+//     segments: Vec<crate::utils::lines::spans::Segment>,
+//     // dragging?
+// }
 
 impl TextView {
     /// Creates a new TextView with the given content.
@@ -211,6 +215,23 @@ impl TextView {
         S: Into<StyledString>,
     {
         Self::new_with_content(TextContent::new(content))
+    }
+
+    /// Convenient function to create a TextView by parsing the given content as cursup.
+    ///
+    /// Shortcut for `TextView::new(cursup::parse(content))`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use cursive_core::views::TextView;
+    /// let view = TextView::cursup("/red+bold{warning}");
+    /// ```
+    pub fn cursup<S>(content: S) -> Self
+    where
+        S: Into<String>,
+    {
+        Self::new(crate::utils::markup::cursup::parse(content))
     }
 
     /// Creates a new TextView using the given `TextContent`.
@@ -232,7 +253,7 @@ impl TextView {
     pub fn new_with_content(content: TextContent) -> Self {
         TextView {
             content,
-            style: Style::default(),
+            style: StyleType::default(),
             rows: Vec::new(),
             wrap: true,
             align: Align::top_left(),
@@ -252,7 +273,7 @@ impl TextView {
     }
 
     /// Sets the style for the content.
-    pub fn set_style<S: Into<Style>>(&mut self, style: S) {
+    pub fn set_style<S: Into<StyleType>>(&mut self, style: S) {
         self.style = style.into();
     }
 
@@ -269,7 +290,7 @@ impl TextView {
     ///
     /// Chainable variant.
     #[must_use]
-    pub fn style<S: Into<Style>>(self, style: S) -> Self {
+    pub fn style<S: Into<StyleType>>(self, style: S) -> Self {
         self.with(|s| s.set_style(style))
     }
 
@@ -365,7 +386,7 @@ impl TextView {
     fn compute_rows(&mut self, size: Vec2) {
         let size = if self.wrap { size } else { Vec2::max_value() };
 
-        let mut content = self.content.content.lock().unwrap();
+        let mut content = self.content.content.lock();
         if content.is_cache_valid(size) {
             return;
         }
@@ -380,8 +401,7 @@ impl TextView {
             return;
         }
 
-        self.rows =
-            LinesIterator::new(content.get_cache().as_ref(), size.x).collect();
+        self.rows = LinesIterator::new(content.get_cache().as_ref(), size.x).collect();
 
         // Desired width
         self.width = if self.rows.iter().any(|row| row.is_wrapped) {
@@ -400,7 +420,7 @@ impl View for TextView {
         let offset = self.align.v.get_offset(h, printer.size.y);
         let printer = &printer.offset((0, offset));
 
-        let content = self.content.content.lock().unwrap();
+        let content = self.content.content.lock();
 
         printer.with_style(self.style, |printer| {
             for (y, row) in self
@@ -413,7 +433,7 @@ impl View for TextView {
                 let l = row.width;
                 let mut x = self.align.h.get_offset(l, printer.size.x);
 
-                for span in row.resolve(content.get_cache().as_ref()) {
+                for span in row.resolve_stream(content.get_cache().as_ref()) {
                     printer.with_style(*span.attr, |printer| {
                         printer.print((x, y), span.content);
                         x += span.content.width();
@@ -424,7 +444,7 @@ impl View for TextView {
     }
 
     fn needs_relayout(&self) -> bool {
-        let content = self.content.content.lock().unwrap();
+        let content = self.content.content.lock();
         content.size_cache.is_none()
     }
 
@@ -442,7 +462,21 @@ impl View for TextView {
         let my_size = Vec2::new(self.width.unwrap_or(0), self.rows.len());
 
         // Build a fresh cache.
-        let mut content = self.content.content.lock().unwrap();
+        let mut content = self.content.content.lock();
         content.size_cache = Some(SizeCache::build(my_size, size));
     }
+}
+
+// Need: a name, a base (potential dependencies), setters
+#[crate::blueprint(TextView::empty())]
+enum Blueprint {
+    // We accept `TextView` without even a body
+    Empty,
+
+    // Inline content
+    Content(StyledString),
+
+    // Full object with optional content field
+    // This is also used to add a `with` block
+    Object { content: Option<StyledString> },
 }

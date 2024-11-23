@@ -3,12 +3,13 @@ use crate::{
     event::*,
     menu,
     rect::Rect,
-    theme::ColorStyle,
+    style::PaletteStyle,
+    utils::markup::StyledString,
     view::{CannotFocus, Position, View},
     views::{MenuPopup, OnEventView},
     Cursive, Printer, Vec2,
 };
-use std::rc::Rc;
+use std::sync::Arc;
 use unicode_width::UnicodeWidthStr;
 
 /// Current state of the menubar
@@ -95,7 +96,7 @@ impl Menubar {
     /// popup-menu with the given menu tree.
     pub fn add_subtree<S>(&mut self, title: S, menu: menu::Tree) -> &mut Self
     where
-        S: Into<String>,
+        S: Into<StyledString>,
     {
         let i = self.root.len();
         self.insert_subtree(i, title, menu)
@@ -110,22 +111,17 @@ impl Menubar {
     /// Adds a leaf node to the menubar.
     pub fn add_leaf<S, F>(&mut self, title: S, cb: F) -> &mut Self
     where
-        S: Into<String>,
-        F: 'static + Fn(&mut Cursive),
+        S: Into<StyledString>,
+        F: 'static + Fn(&mut Cursive) + Send + Sync,
     {
         let i = self.root.len();
         self.insert_leaf(i, title, cb)
     }
 
     /// Insert a new item at the given position.
-    pub fn insert_subtree<S>(
-        &mut self,
-        i: usize,
-        title: S,
-        menu: menu::Tree,
-    ) -> &mut Self
+    pub fn insert_subtree<S>(&mut self, i: usize, title: S, menu: menu::Tree) -> &mut Self
     where
-        S: Into<String>,
+        S: Into<StyledString>,
     {
         self.root.insert_subtree(i, title, menu);
         self
@@ -144,8 +140,8 @@ impl Menubar {
     /// It will be directly actionable.
     pub fn insert_leaf<S, F>(&mut self, i: usize, title: S, cb: F) -> &mut Self
     where
-        S: Into<String>,
-        F: 'static + Fn(&mut Cursive),
+        S: Into<StyledString>,
+        F: 'static + Fn(&mut Cursive) + Send + Sync,
     {
         self.root.insert_leaf(i, title, cb);
         self
@@ -215,9 +211,9 @@ impl Menubar {
                 EventResult::Consumed(Some(cb.clone()))
             }
             menu::Item::Subtree { ref tree, .. } => {
-                // First, we need a new Rc to send the callback,
+                // First, we need a new Arc to send the callback,
                 // since we don't know when it will be called.
-                let menu = Rc::clone(tree);
+                let menu = Arc::clone(tree);
 
                 self.state = State::Submenu;
                 let offset = Vec2::new(
@@ -225,20 +221,18 @@ impl Menubar {
                         .iter()
                         .map(|child| child.label().width() + 2)
                         .sum(),
-                    if self.autohide { 1 } else { 0 },
+                    usize::from(self.autohide),
                 );
                 // Since the closure will be called multiple times,
-                // we also need a new Rc on every call.
-                EventResult::with_cb(move |s| {
-                    show_child(s, offset, Rc::clone(&menu))
-                })
+                // we also need a new Arc on every call.
+                EventResult::with_cb(move |s| show_child(s, offset, Arc::clone(&menu)))
             }
             _ => EventResult::Ignored,
         }
     }
 }
 
-fn show_child(s: &mut Cursive, offset: Vec2, menu: Rc<menu::Tree>) {
+fn show_child(s: &mut Cursive, offset: Vec2, menu: Arc<menu::Tree>) {
     // Adds a new layer located near the item title with the menu popup.
     // Also adds two key callbacks on this new view, to handle `left` and
     // `right` key presses.
@@ -257,9 +251,7 @@ fn show_child(s: &mut Cursive, offset: Vec2, menu: Rc<menu::Tree>) {
             s.select_menubar();
             // Act as if we sent "Right" then "Down"
             s.menubar().on_event(Event::Key(Key::Right)).process(s);
-            if let EventResult::Consumed(Some(cb)) =
-                s.menubar().on_event(Event::Key(Key::Down))
-            {
+            if let EventResult::Consumed(Some(cb)) = s.menubar().on_event(Event::Key(Key::Down)) {
                 cb(s);
             }
         })
@@ -268,9 +260,7 @@ fn show_child(s: &mut Cursive, offset: Vec2, menu: Rc<menu::Tree>) {
             s.select_menubar();
             // Act as if we sent "Left" then "Down"
             s.menubar().on_event(Event::Key(Key::Left)).process(s);
-            if let EventResult::Consumed(Some(cb)) =
-                s.menubar().on_event(Event::Key(Key::Down))
-            {
+            if let EventResult::Consumed(Some(cb)) = s.menubar().on_event(Event::Key(Key::Down)) {
                 cb(s);
             }
         }),
@@ -280,38 +270,38 @@ fn show_child(s: &mut Cursive, offset: Vec2, menu: Rc<menu::Tree>) {
 impl View for Menubar {
     fn draw(&self, printer: &Printer) {
         // Draw the bar at the top
-        printer.with_color(ColorStyle::primary(), |printer| {
+        printer.with_style(PaletteStyle::View, |printer| {
             printer.print_hline((0, 0), printer.size.x, " ");
+
+            // TODO: draw the rest
+            let mut offset = 1;
+            for (i, item) in self.root.children.iter().enumerate() {
+                let label = item.styled_label();
+                let label_width = label.width();
+                // We print disabled items differently, except delimiters,
+                // which are still white.
+                let enabled = printer.enabled && (item.is_enabled() || item.is_delimiter());
+
+                // We don't want to show HighlightInactive when we're not selected,
+                // because it's ugly on the menubar.
+                let selected = (self.state != State::Inactive) && (i == self.focus);
+
+                let style = match (enabled, selected) {
+                    (false, _) => PaletteStyle::Secondary,
+                    (true, true) => PaletteStyle::Highlight,
+                    _ => PaletteStyle::Primary,
+                };
+
+                printer.with_style(style, |printer| {
+                    printer.print((offset, 0), " ");
+                    offset += 1;
+                    printer.print_styled((offset, 0), label);
+                    offset += label_width;
+                    printer.print((offset, 0), " ");
+                    offset += 1;
+                });
+            }
         });
-
-        // TODO: draw the rest
-        let mut offset = 1;
-        for (i, item) in self.root.children.iter().enumerate() {
-            let label = item.label();
-
-            // We print disabled items differently, except delimiters,
-            // which are still white.
-            let enabled =
-                printer.enabled && (item.is_enabled() || item.is_delimiter());
-
-            // We don't want to show HighlightInactive when we're not selected,
-            // because it's ugly on the menubar.
-            let selected =
-                (self.state != State::Inactive) && (i == self.focus);
-
-            let color = if !enabled {
-                ColorStyle::secondary()
-            } else if selected {
-                ColorStyle::highlight()
-            } else {
-                ColorStyle::primary()
-            };
-
-            printer.with_style(color, |printer| {
-                printer.print((offset, 0), &format!(" {} ", label));
-            });
-            offset += label.width() + 2;
-        }
     }
 
     fn on_event(&mut self, event: Event) -> EventResult {
@@ -393,10 +383,7 @@ impl View for Menubar {
         EventResult::Consumed(None)
     }
 
-    fn take_focus(
-        &mut self,
-        _: direction::Direction,
-    ) -> Result<EventResult, CannotFocus> {
+    fn take_focus(&mut self, _: direction::Direction) -> Result<EventResult, CannotFocus> {
         self.state = State::Selected;
         Ok(EventResult::consumed())
     }

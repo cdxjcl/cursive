@@ -1,5 +1,5 @@
 use crate::div::div_up;
-use crate::theme::ColorStyle;
+use crate::style::Style;
 use crate::Printer;
 use crate::Vec2;
 use std::cmp::{max, min};
@@ -76,7 +76,7 @@ impl ScrollBase {
         self
     }
 
-    /// Call this method whem the content or the view changes.
+    /// Call this method when the content or the view changes.
     pub fn set_heights(&mut self, view_height: usize, content_height: usize) {
         self.view_height = view_height;
         self.content_height = content_height;
@@ -84,8 +84,7 @@ impl ScrollBase {
         // eprintln!("Setting heights: {} in {}", content_height, view_height);
 
         if self.scrollable() {
-            self.start_line =
-                min(self.start_line, self.content_height - self.view_height);
+            self.start_line = min(self.start_line, self.content_height - self.view_height);
         } else {
             self.start_line = 0;
         }
@@ -132,10 +131,7 @@ impl ScrollBase {
     /// Never further than the bottom of the view.
     pub fn scroll_down(&mut self, n: usize) {
         if self.scrollable() {
-            self.start_line = min(
-                self.start_line + n,
-                self.content_height - self.view_height,
-            );
+            self.start_line = min(self.start_line + n, self.content_height - self.view_height);
         }
     }
 
@@ -220,15 +216,14 @@ impl ScrollBase {
     /// # Examples
     ///
     /// ```rust
+    /// # #[allow(deprecated)]
+    /// # fn with_printer(printer: &cursive_core::Printer) {
     /// # let scrollbase = cursive_core::view::ScrollBase::new();
-    /// # let b = cursive_core::backend::Dummy::init();
-    /// # let t = cursive_core::theme::load_default();
-    /// # let printer = &cursive_core::Printer::new((5,1), &t, &*b);
-    /// # let printer = &printer;
     /// let lines = ["Line 1", "Line number 2"];
     /// scrollbase.draw(printer, |printer, i| {
     ///     printer.print((0, 0), lines[i]);
     /// });
+    /// # }
     /// ```
     pub fn draw<F>(&self, printer: &Printer, line_drawer: F)
     where
@@ -238,8 +233,7 @@ impl ScrollBase {
             return;
         }
         // Print the content in a sub_printer
-        let max_y =
-            min(self.view_height, self.content_height - self.start_line);
+        let max_y = min(self.view_height, self.content_height - self.start_line);
         let w = if self.scrollable() {
             // We have to remove the bar width and the padding.
             printer.size.x.saturating_sub(1 + self.right_padding)
@@ -250,10 +244,7 @@ impl ScrollBase {
         for y in 0..max_y {
             // Y is the actual coordinate of the line.
             // The item ID is then Y + self.start_line
-            line_drawer(
-                &printer.offset((0, y)).cropped((w, 1)),
-                y + self.start_line,
-            );
+            line_drawer(&printer.offset((0, y)).cropped((w, 1)), y + self.start_line);
         }
 
         // And draw the scrollbar if needed
@@ -265,10 +256,10 @@ impl ScrollBase {
             let height = self.scrollbar_thumb_height();
             let start = self.scrollbar_thumb_y(height);
 
-            let color = if printer.focused {
-                ColorStyle::highlight()
+            let style = if printer.focused {
+                Style::highlight()
             } else {
-                ColorStyle::highlight_inactive()
+                Style::highlight_inactive()
             };
 
             let scrollbar_x = self.scrollbar_x(printer.size.x);
@@ -278,7 +269,7 @@ impl ScrollBase {
             printer.print_vline((scrollbar_x, 0), printer.size.y, "|");
 
             // The scrollbar thumb
-            printer.with_color(color, |printer| {
+            printer.with_style(style, |printer| {
                 printer.print_vline((scrollbar_x, start), height, "▒");
             });
         }

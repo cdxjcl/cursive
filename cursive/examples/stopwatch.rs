@@ -22,10 +22,7 @@ fn main() {
                             running: true,
                         })
                         .with_draw(|s, printer| {
-                            printer.print(
-                                (0, 1),
-                                &format!("{:.2?}", s.elapsed()),
-                            );
+                            printer.print((0, 1), &format!("{:.2?}", s.elapsed()));
                         })
                         .with_name("stopwatch")
                         .fixed_size((8, 3)),
@@ -54,6 +51,9 @@ struct Watch {
 
 impl Watch {
     fn start(&mut self) {
+        if self.running {
+            return;
+        }
         self.running = true;
         self.last_started = Instant::now();
     }

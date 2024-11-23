@@ -1,5 +1,5 @@
 use crate::view::{View, ViewWrapper};
-use crate::views::{NamedView, ViewRef};
+use crate::views::{BoxedView, NamedView, ViewRef};
 
 /// Provides `call_on<V: View>` to views.
 ///
@@ -13,11 +13,7 @@ pub trait Finder {
     ///
     /// If the view is not found, or if it is not of the asked type,
     /// it returns `None`.
-    fn call_on<V, F, R>(
-        &mut self,
-        sel: &Selector<'_>,
-        callback: F,
-    ) -> Option<R>
+    fn call_on<V, F, R>(&mut self, sel: &Selector, callback: F) -> Option<R>
     where
         V: View,
         F: FnOnce(&mut V) -> R,
@@ -35,7 +31,7 @@ pub trait Finder {
     /// Runs a callback on all views identified by `sel`.
     ///
     /// Useful if you have multiple views of the same type with the same name.
-    fn call_on_all<V, F>(&mut self, sel: &Selector<'_>, callback: F)
+    fn call_on_all<V, F>(&mut self, sel: &Selector, callback: F)
     where
         V: View,
         F: FnMut(&mut V);
@@ -59,16 +55,24 @@ pub trait Finder {
 }
 
 impl<T: View> Finder for T {
-    fn call_on_all<V, F>(&mut self, sel: &Selector<'_>, mut callback: F)
+    fn call_on_all<V, F>(&mut self, sel: &Selector, mut callback: F)
     where
         V: View,
         F: FnMut(&mut V),
     {
         self.call_on_any(sel, &mut |v: &mut dyn View| {
             if let Some(v) = v.downcast_mut::<V>() {
+                // Allow to select the view directly.
                 callback(v);
             } else if let Some(v) = v.downcast_mut::<NamedView<V>>() {
+                // In most cases we will actually find the wrapper.
                 v.with_view_mut(&mut callback);
+            } else if let Some(v) = v.downcast_mut::<NamedView<BoxedView>>() {
+                v.with_view_mut(|v: &mut BoxedView| {
+                    if let Some(v) = v.get_mut() {
+                        callback(v);
+                    }
+                });
             }
         });
     }

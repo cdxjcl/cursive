@@ -3,9 +3,7 @@ use crate::{
     direction,
     event::{AnyCb, Event, EventResult, Key},
     rect::Rect,
-    view::{
-        CannotFocus, IntoBoxedView, Selector, SizeCache, View, ViewNotFound,
-    },
+    view::{CannotFocus, IntoBoxedView, Selector, SizeCache, View, ViewNotFound},
     Printer, Vec2, With, XY,
 };
 use log::debug;
@@ -80,11 +78,7 @@ struct ChildItem<T> {
 }
 
 impl<T> ChildIterator<T> {
-    fn new(
-        inner: T,
-        orientation: direction::Orientation,
-        available: usize,
-    ) -> Self {
+    fn new(inner: T, orientation: direction::Orientation, available: usize) -> Self {
         ChildIterator {
             inner,
             available,
@@ -94,9 +88,7 @@ impl<T> ChildIterator<T> {
     }
 }
 
-impl<T: Deref<Target = Child>, I: Iterator<Item = T>> Iterator
-    for ChildIterator<I>
-{
+impl<T: Deref<Target = Child>, I: Iterator<Item = T>> Iterator for ChildIterator<I> {
     type Item = ChildItem<T>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -106,10 +98,7 @@ impl<T: Deref<Target = Child>, I: Iterator<Item = T>> Iterator
 
             // debug!("Available: {}", self.available);
 
-            let length = min(
-                self.available,
-                *child.required_size.get(self.orientation),
-            );
+            let length = min(self.available, *child.required_size.get(self.orientation));
 
             // Allocated width
             self.available = self.available.saturating_sub(length);
@@ -190,11 +179,7 @@ impl LinearLayout {
     /// # Panics
     ///
     /// Panics if `i > self.len()`.
-    pub fn insert_child<V: IntoBoxedView + 'static>(
-        &mut self,
-        i: usize,
-        view: V,
-    ) {
+    pub fn insert_child<V: IntoBoxedView + 'static>(&mut self, i: usize, view: V) {
         self.children.insert(
             i,
             Child {
@@ -228,27 +213,21 @@ impl LinearLayout {
         self.focus
     }
 
-    /// Attemps to set the focus on the given child.
+    /// Attempts to set the focus on the given child.
     ///
-    /// Returns `Err(())` if `index >= self.len()`, or if the view at the
+    /// Returns `Err(ViewNotFound)` if `index >= self.len()`, or if the view at the
     /// given index does not accept focus.
-    pub fn set_focus_index(
-        &mut self,
-        index: usize,
-    ) -> Result<EventResult, ViewNotFound> {
+    pub fn set_focus_index(&mut self, index: usize) -> Result<EventResult, ViewNotFound> {
         self.children
             .get_mut(index)
-            .and_then(|child| {
-                child.view.take_focus(direction::Direction::none()).ok()
-            })
+            .and_then(|child| child.view.take_focus(direction::Direction::none()).ok())
             .map(|res| res.and(self.set_focus_unchecked(index)))
             .ok_or(ViewNotFound)
     }
 
     fn set_focus_unchecked(&mut self, index: usize) -> EventResult {
         if index != self.focus {
-            let result =
-                self.children[self.focus].view.on_event(Event::FocusLost);
+            let result = self.children[self.focus].view.on_event(Event::FocusLost);
             self.focus = index;
             result
         } else {
@@ -299,9 +278,7 @@ impl LinearLayout {
             self.invalidate();
 
             // Keep the same view focused.
-            if self.focus > i
-                || (self.focus != 0 && self.focus == self.children.len() - 1)
-            {
+            if self.focus > i || (self.focus != 0 && self.focus == self.children.len() - 1) {
                 self.focus -= 1;
             }
 
@@ -339,9 +316,7 @@ impl LinearLayout {
             Some(ref cache) => {
                 // Is our cache even valid?
                 // Also, is any child invalidating the layout?
-                if cache.zip_map(req, SizeCache::accept).both()
-                    && self.children_are_sleeping()
-                {
+                if cache.zip_map(req, SizeCache::accept).both() && self.children_are_sleeping() {
                     Some(cache.map(|s| s.value))
                 } else {
                     None
@@ -428,7 +403,7 @@ impl LinearLayout {
                 self.children.iter_mut(),
                 self.orientation,
                 // TODO: get actual width (not super important)
-                usize::max_value(),
+                usize::MAX,
             )
             .enumerate()
             {
@@ -498,9 +473,7 @@ impl View for LinearLayout {
         // We'll use this guy a few times, but it's a mouthful...
         let o = self.orientation;
 
-        for item in
-            ChildIterator::new(self.children.iter_mut(), o, *size.get(o))
-        {
+        for item in ChildIterator::new(self.children.iter_mut(), o, *size.get(o)) {
             // Every item has the same size orthogonal to the layout
             let size = size.with_axis(o, item.length);
 
@@ -574,8 +547,7 @@ impl View for LinearLayout {
 
         // This here is how much we're generously offered
         // (We just checked that req >= desperate, so the subtraction is safe
-        let mut available =
-            self.orientation.get(&(req.saturating_sub(desperate)));
+        let mut available = self.orientation.get(&(req.saturating_sub(desperate)));
         debug!("Available: {:?}", available);
 
         // Here, we have to make a compromise between the ideal
@@ -640,10 +612,7 @@ impl View for LinearLayout {
         compromise
     }
 
-    fn take_focus(
-        &mut self,
-        source: direction::Direction,
-    ) -> Result<EventResult, CannotFocus> {
+    fn take_focus(&mut self, source: direction::Direction) -> Result<EventResult, CannotFocus> {
         // In what order will we iterate on the children?
         let rel = source.relative(self.orientation);
 
@@ -671,11 +640,8 @@ impl View for LinearLayout {
             .unwrap_or(EventResult::Ignored);
 
         let result = {
-            let mut iterator = ChildIterator::new(
-                self.children.iter_mut(),
-                self.orientation,
-                usize::max_value(),
-            );
+            let mut iterator =
+                ChildIterator::new(self.children.iter_mut(), self.orientation, usize::MAX);
             let item = iterator.nth(self.focus).unwrap();
             let offset = self.orientation.make_vec(item.offset, 0);
             item.child.view.on_event(event.relativized(offset))
@@ -685,35 +651,27 @@ impl View for LinearLayout {
                 Event::Shift(Key::Tab) if self.focus > 0 => {
                     self.move_focus(direction::Direction::back())
                 }
-                Event::Key(Key::Tab)
-                    if self.focus + 1 < self.children.len() =>
-                {
+                Event::Key(Key::Tab) if self.focus + 1 < self.children.len() => {
                     self.move_focus(direction::Direction::front())
                 }
                 Event::Key(Key::Left)
-                    if self.orientation
-                        == direction::Orientation::Horizontal
-                        && self.focus > 0 =>
+                    if self.orientation == direction::Orientation::Horizontal && self.focus > 0 =>
                 {
                     self.move_focus(direction::Direction::right())
                 }
                 Event::Key(Key::Up)
-                    if self.orientation
-                        == direction::Orientation::Vertical
-                        && self.focus > 0 =>
+                    if self.orientation == direction::Orientation::Vertical && self.focus > 0 =>
                 {
                     self.move_focus(direction::Direction::down())
                 }
                 Event::Key(Key::Right)
-                    if self.orientation
-                        == direction::Orientation::Horizontal
+                    if self.orientation == direction::Orientation::Horizontal
                         && self.focus + 1 < self.children.len() =>
                 {
                     self.move_focus(direction::Direction::left())
                 }
                 Event::Key(Key::Down)
-                    if self.orientation
-                        == direction::Orientation::Vertical
+                    if self.orientation == direction::Orientation::Vertical
                         && self.focus + 1 < self.children.len() =>
                 {
                     self.move_focus(direction::Direction::up())
@@ -724,20 +682,13 @@ impl View for LinearLayout {
         })
     }
 
-    fn call_on_any<'a>(
-        &mut self,
-        selector: &Selector<'_>,
-        callback: AnyCb<'a>,
-    ) {
+    fn call_on_any(&mut self, selector: &Selector, callback: AnyCb) {
         for child in &mut self.children {
             child.view.call_on_any(selector, callback);
         }
     }
 
-    fn focus_view(
-        &mut self,
-        selector: &Selector<'_>,
-    ) -> Result<EventResult, ViewNotFound> {
+    fn focus_view(&mut self, selector: &Selector) -> Result<EventResult, ViewNotFound> {
         for (i, child) in self.children.iter_mut().enumerate() {
             if child.view.focus_view(selector).is_ok() {
                 return Ok(self.set_focus_unchecked(i));
@@ -755,11 +706,8 @@ impl View for LinearLayout {
 
         // Pick the focused item, with its offset
         let item = {
-            let mut iterator = ChildIterator::new(
-                self.children.iter(),
-                self.orientation,
-                usize::max_value(),
-            );
+            let mut iterator =
+                ChildIterator::new(self.children.iter(), self.orientation, usize::MAX);
             iterator.nth(self.focus).unwrap()
         };
 
@@ -773,3 +721,48 @@ impl View for LinearLayout {
         rect + offset
     }
 }
+
+/*
+#[crate::blueprint(LinearLayout::new(orientation))]
+struct Blueprint {
+    orientation: direction::Orientation,
+
+    #[blueprint(foreach=add_child)]
+    children: Vec<crate::views::BoxedView>,
+
+    #[blueprint(
+        set_focus_index,
+        on_err="LinearLayout.focus cannot be larger than the number of views.",
+    )]
+    focus: Option<usize>,
+}
+*/
+
+crate::manual_blueprint!(LinearLayout, |config, context| {
+    let orientation = match config.get("orientation") {
+        Some(orientation) => context.resolve(orientation)?,
+        None => direction::Orientation::Vertical,
+    };
+
+    let mut layout = LinearLayout::new(orientation);
+
+    let children: Option<Vec<crate::views::BoxedView>> =
+        context.resolve_as_config(&config["children"])?;
+    if let Some(children) = children {
+        for child in children {
+            layout.add_child(child);
+        }
+    }
+
+    if let Some(focus) = config.get("focus") {
+        let focus = context.resolve(focus)?;
+        layout
+            .set_focus_index(focus)
+            .map_err(|_| crate::builder::Error::InvalidConfig {
+                message: "LinearLayout.focus cannot be larger than the number of views.".into(),
+                config: config.clone(),
+            })?;
+    }
+
+    Ok(layout)
+});

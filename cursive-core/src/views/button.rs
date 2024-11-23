@@ -3,13 +3,13 @@ use crate::{
     direction::Direction,
     event::*,
     rect::Rect,
-    theme::ColorStyle,
+    style::PaletteStyle,
+    utils::markup::StyledString,
     view::{CannotFocus, View},
     Cursive, Printer, Vec2,
 };
-use unicode_width::UnicodeWidthStr;
 
-/// Simple text label with a callback when <Enter> is pressed.
+/// Simple text label with a callback when `<Enter>` is pressed.
 ///
 /// A button shows its content in a single line and has a fixed size.
 ///
@@ -21,7 +21,7 @@ use unicode_width::UnicodeWidthStr;
 /// let quit_button = Button::new("Quit", |s| s.quit());
 /// ```
 pub struct Button {
-    label: String,
+    label: StyledString,
     callback: Callback,
     enabled: bool,
     last_size: Vec2,
@@ -33,13 +33,17 @@ impl Button {
     impl_enabled!(self.enabled);
 
     /// Creates a new button with the given content and callback.
+    #[crate::callback_helpers]
     pub fn new<F, S>(label: S, cb: F) -> Self
     where
-        F: 'static + Fn(&mut Cursive),
-        S: Into<String>,
+        F: 'static + Fn(&mut Cursive) + Send + Sync,
+        S: Into<StyledString>,
     {
         let label = label.into();
-        Self::new_raw(format!("<{}>", label), cb)
+        let label: StyledString =
+            StyledString::concatenate([StyledString::plain("<"), label, StyledString::plain(">")]);
+
+        Self::new_raw(label, cb)
     }
 
     /// Creates a new button without angle brackets.
@@ -51,9 +55,9 @@ impl Button {
     ///
     /// let button = Button::new_raw("[ Quit ]", |s| s.quit());
     /// ```
-    pub fn new_raw<F, S: Into<String>>(label: S, cb: F) -> Self
+    pub fn new_raw<F, S: Into<StyledString>>(label: S, cb: F) -> Self
     where
-        F: 'static + Fn(&mut Cursive),
+        F: 'static + Fn(&mut Cursive) + Send + Sync,
     {
         Button {
             label: label.into(),
@@ -69,7 +73,7 @@ impl Button {
     /// Replaces the previous callback.
     pub fn set_callback<F>(&mut self, cb: F)
     where
-        F: Fn(&mut Cursive) + 'static,
+        F: Fn(&mut Cursive) + 'static + Send + Sync,
     {
         self.callback = Callback::from_fn(cb);
     }
@@ -86,7 +90,7 @@ impl Button {
     /// assert_eq!(button.label(), "<Quit>");
     /// ```
     pub fn label(&self) -> &str {
-        &self.label
+        self.label.source()
     }
 
     /// Sets the label to the given value.
@@ -113,7 +117,7 @@ impl Button {
     /// This will not include brackets.
     pub fn set_label_raw<S>(&mut self, label: S)
     where
-        S: Into<String>,
+        S: Into<StyledString>,
     {
         self.label = label.into();
         self.invalidate();
@@ -135,18 +139,29 @@ impl View for Button {
         }
 
         let style = if !(self.enabled && printer.enabled) {
-            ColorStyle::secondary()
+            // Disabled button goes blue
+            PaletteStyle::Secondary
         } else if printer.focused {
-            ColorStyle::highlight()
+            // Selected button is highlighted
+            PaletteStyle::Highlight
         } else {
-            ColorStyle::primary()
+            // Looks like regular text if not selected
+            PaletteStyle::Primary
         };
 
-        let offset =
-            HAlign::Center.get_offset(self.label.width(), printer.size.x);
+        let offset = HAlign::Center.get_offset(self.label.width(), printer.size.x);
 
-        printer.with_color(style, |printer| {
-            printer.print((offset, 0), &self.label);
+        // eprintln!("Button style: {style:?}");
+        printer.with_style(style, |printer| {
+            // TODO: do we want to "fill" the button highlight color to the full given size?
+            // printer.print_hline((0, 0), offset, " ");
+            printer.print_styled((offset, 0), &self.label);
+            // let end = offset + self.label.width();
+            // printer.print_hline(
+            //     (end, 0),
+            //     printer.size.x.saturating_sub(end),
+            //     " ",
+            // );
         });
     }
 
@@ -170,26 +185,19 @@ impl View for Button {
         let width = self.label.width();
         let self_offset = HAlign::Center.get_offset(width, self.last_size.x);
         match event {
-            Event::Key(Key::Enter) => {
-                EventResult::Consumed(Some(self.callback.clone()))
-            }
+            Event::Key(Key::Enter) => EventResult::Consumed(Some(self.callback.clone())),
             Event::Mouse {
                 event: MouseEvent::Release(MouseButton::Left),
                 position,
                 offset,
-            } if position
-                .fits_in_rect(offset + (self_offset, 0), self.req_size()) =>
-            {
+            } if position.fits_in_rect(offset + (self_offset, 0), self.req_size()) => {
                 EventResult::Consumed(Some(self.callback.clone()))
             }
             _ => EventResult::Ignored,
         }
     }
 
-    fn take_focus(
-        &mut self,
-        _: Direction,
-    ) -> Result<EventResult, CannotFocus> {
+    fn take_focus(&mut self, _: Direction) -> Result<EventResult, CannotFocus> {
         self.enabled.then(EventResult::consumed).ok_or(CannotFocus)
     }
 
@@ -204,3 +212,35 @@ impl View for Button {
         self.invalidated
     }
 }
+
+// Here we use the `new_with_cb` method generated by `callback_helpers`.
+// Note that the `Blueprint` type will not actually exist.
+#[crate::blueprint(Button::new_with_cb(label, callback))]
+struct Blueprint {
+    // Fields mentioned in the initializer will be used there
+    label: StyledString,
+
+    // Callback types can be omitted
+    callback: _,
+
+    // Other fields will use `set_$name`
+    enabled: Option<bool>,
+}
+
+// The above blueprint will expand to this code:
+/*
+crate::manual_blueprint!(Button, |config, context| {
+    Ok({
+        let label: StyledString = context.resolve(&config["label"])?;
+        let callback: _ = context.resolve(&config["callback"])?;
+        let mut button = Button::new_with_cb(label, callback);
+
+        let enabled: Option<bool> = context.resolve(&config["enabled"])?;
+        if let Some(enabled) = enabled {
+            button.set_enabled(enabled);
+        }
+
+        button
+    })
+});
+*/

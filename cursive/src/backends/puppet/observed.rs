@@ -5,8 +5,7 @@ use crate::theme::Effect;
 use crate::Vec2;
 use std::ops::Index;
 use std::ops::IndexMut;
-use std::rc::Rc;
-use std::string::ToString;
+use std::sync::Arc;
 use std::{fmt, fmt::Display, fmt::Formatter};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -58,18 +57,14 @@ pub struct ObservedCell {
     /// Absolute position
     pub pos: Vec2,
     /// Style
-    pub style: Rc<ObservedStyle>,
+    pub style: Arc<ObservedStyle>,
     /// Part of grapheme - either it's beginning or continuation when character is multi-cell long.
     pub letter: GraphemePart,
 }
 
 impl ObservedCell {
     /// Constructor
-    pub fn new(
-        pos: Vec2,
-        style: Rc<ObservedStyle>,
-        letter: Option<String>,
-    ) -> Self {
+    pub fn new(pos: Vec2, style: Arc<ObservedStyle>, letter: Option<String>) -> Self {
         let letter: GraphemePart = match letter {
             Some(s) => GraphemePart::Begin(s),
             None => GraphemePart::Continuation,
@@ -91,7 +86,7 @@ pub struct ObservedScreen {
 }
 
 impl Display for ObservedScreen {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         writeln!(f, "captured piece:")?;
 
         write!(f, "x")?;
@@ -117,7 +112,7 @@ impl Display for ObservedScreen {
                         if letter == " " {
                             write!(f, " ")?;
                         } else {
-                            write!(f, "{}", letter)?;
+                            write!(f, "{letter}")?;
                         }
                     }
                 } else {
@@ -158,7 +153,7 @@ impl ObservedScreen {
     }
 
     /// Sets all cells to empty cells with given style
-    pub fn clear(&mut self, style: &Rc<ObservedStyle>) {
+    pub fn clear(&mut self, style: &Arc<ObservedStyle>) {
         for idx in 0..self.contents.len() {
             self.contents[idx] = Some(ObservedCell::new(
                 self.unflatten_index(idx),
@@ -180,10 +175,10 @@ impl ObservedScreen {
 
     /// Prints the piece to stdout.
     pub fn print_stdout(&self) {
-        println!("{}", self)
+        println!("{self}")
     }
 
-    /// Returns occurences of given string pattern
+    /// Returns occurrences of given string pattern
     pub fn find_occurences(&self, pattern: &str) -> Vec<ObservedLine> {
         // TODO(njskalski): test for two-cell letters.
         // TODO(njskalski): fails with whitespaces like "\t".
@@ -205,20 +200,16 @@ impl ObservedScreen {
                         .graphemes(true)
                         .nth(pattern_cursor)
                         .unwrap_or_else(|| {
-                            panic!(
-                                "Found no char at cursor {} in {}",
-                                pattern_cursor, &pattern
-                            )
+                            panic!("Found no char at cursor {} in {}", pattern_cursor, &pattern)
                         });
 
                     let pos_it = Vec2::new(x + pos_cursor, y);
 
-                    let found_symbol: Option<&String> =
-                        if let Some(ref cell) = self[pos_it] {
-                            cell.letter.as_option()
-                        } else {
-                            None
-                        };
+                    let found_symbol: Option<&String> = if let Some(ref cell) = self[pos_it] {
+                        cell.letter.as_option()
+                    } else {
+                        None
+                    };
 
                     match found_symbol {
                         Some(screen_symbol) => {
@@ -245,11 +236,7 @@ impl ObservedScreen {
                 }
 
                 if pattern_cursor == pattern.graphemes(true).count() {
-                    hits.push(ObservedLine::new(
-                        self,
-                        Vec2::new(x, y),
-                        pos_cursor,
-                    ));
+                    hits.push(ObservedLine::new(self, Vec2::new(x, y), pos_cursor));
                 }
             }
         }
@@ -301,11 +288,7 @@ pub trait ObservedPieceInterface {
         assert!(self.max().x + down_right.x <= self.parent().size.x);
         assert!(self.max().y + down_right.y <= self.parent().size.y);
 
-        ObservedPiece::new(
-            self.parent(),
-            self.min() - up_left,
-            self.max() + down_right,
-        )
+        ObservedPiece::new(self.parent(), self.min() - up_left, self.max() + down_right)
     }
 }
 
@@ -358,11 +341,7 @@ pub struct ObservedLine<'a> {
 }
 
 impl<'a> ObservedLine<'a> {
-    fn new(
-        parent: &'a ObservedScreen,
-        line_start: Vec2,
-        line_len: usize,
-    ) -> Self {
+    fn new(parent: &'a ObservedScreen, line_start: Vec2, line_len: usize) -> Self {
         ObservedLine {
             line_start,
             line_len,
@@ -376,9 +355,7 @@ impl<'a> ObservedLine<'a> {
     #[must_use]
     pub fn expanded_line(&self, left: usize, right: usize) -> Self {
         assert!(left <= self.line_start.x);
-        assert!(
-            self.line_start.x + self.line_len + right <= self.parent.size.x
-        );
+        assert!(self.line_start.x + self.line_len + right <= self.parent.size.x);
 
         ObservedLine {
             line_start: Vec2::new(self.line_start.x - left, self.line_start.y),
@@ -402,9 +379,9 @@ impl<'a> ObservedPieceInterface for ObservedLine<'a> {
     }
 }
 
-impl<'a> ToString for ObservedLine<'a> {
-    fn to_string(&self) -> String {
-        self.as_strings().remove(0)
+impl<'a> Display for ObservedLine<'a> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "{}", self.as_strings().remove(0))
     }
 }
 
@@ -442,9 +419,8 @@ mod tests {
     use crate::backends::puppet::DEFAULT_OBSERVED_STYLE;
 
     /// Expecting fake_screen to be square, # will be replaced with blank.
-    fn get_observed_screen(fake_screen: &Vec<&str>) -> ObservedScreen {
-        let observed_style: Rc<ObservedStyle> =
-            Rc::new(DEFAULT_OBSERVED_STYLE.clone());
+    fn get_observed_screen(fake_screen: &[&str]) -> ObservedScreen {
+        let observed_style: Arc<ObservedStyle> = Arc::new(DEFAULT_OBSERVED_STYLE.clone());
 
         let height = fake_screen.len();
         let width = fake_screen[0].width();
@@ -452,9 +428,9 @@ mod tests {
 
         let mut os = ObservedScreen::new(size);
 
-        for y in 0..fake_screen.len() {
+        for (y, row) in fake_screen.iter().enumerate() {
             let mut x: usize = 0;
-            for letter in fake_screen[y].graphemes(true) {
+            for letter in row.graphemes(true) {
                 let idx = os.flatten_index(Vec2::new(x, y));
                 os.contents[idx] = if letter == "#" {
                     None
@@ -475,8 +451,7 @@ mod tests {
 
     #[test]
     fn test_test() {
-        let fake_screen: Vec<&'static str> =
-            vec!["..hello***", "!!##$$$$$*", ".hello^^^^"];
+        let fake_screen: Vec<&'static str> = vec!["..hello***", "!!##$$$$$*", ".hello^^^^"];
 
         let os = get_observed_screen(&fake_screen);
 
@@ -489,8 +464,7 @@ mod tests {
 
     #[test]
     fn find_occurrences_no_blanks() {
-        let fake_screen: Vec<&'static str> =
-            vec!["..hello***", "!!##$$$$$*", ".hello^^^^"];
+        let fake_screen: Vec<&'static str> = vec!["..hello***", "!!##$$$$$*", ".hello^^^^"];
 
         let os = get_observed_screen(&fake_screen);
 

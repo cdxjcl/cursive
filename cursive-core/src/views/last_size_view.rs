@@ -32,3 +32,10 @@ impl<T: View> ViewWrapper for LastSizeView<T> {
         self.view.layout(size);
     }
 }
+
+#[crate::blueprint(LastSizeView::new(view))]
+struct Blueprint {
+    view: crate::views::BoxedView,
+}
+
+crate::manual_blueprint!(with last_size, |_, _| Ok(LastSizeView::new));

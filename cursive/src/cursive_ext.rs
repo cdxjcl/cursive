@@ -53,7 +53,7 @@ pub trait CursiveExt {
     /// Creates a new Cursive root using a crossterm backend.
     #[cfg(feature = "crossterm-backend")]
     #[cfg_attr(feature = "doc-cfg", doc(cfg(feature = "crossterm-backend")))]
-    fn run_crossterm(&mut self) -> Result<(), crossterm::ErrorKind>;
+    fn run_crossterm(&mut self) -> Result<(), std::io::Error>;
 
     /// Creates a new Cursive root using a bear-lib-terminal backend.
     #[cfg(feature = "blt-backend")]
@@ -68,12 +68,12 @@ impl CursiveExt for cursive_core::Cursive {
                 self.run_blt()
             } else if #[cfg(feature = "termion-backend")] {
                 self.run_termion().unwrap()
-            } else if #[cfg(feature = "crossterm-backend")] {
-                self.run_crossterm().unwrap()
             } else if #[cfg(feature = "pancurses-backend")] {
                 self.run_pancurses().unwrap()
             } else if #[cfg(feature = "ncurses-backend")] {
                 self.run_ncurses().unwrap()
+            } else if #[cfg(feature = "crossterm-backend")] {
+                self.run_crossterm().unwrap()
             } else {
                 log::warn!("No built-it backend, falling back to Cursive::dummy().");
                 self.run_dummy()
@@ -101,7 +101,7 @@ impl CursiveExt for cursive_core::Cursive {
 
     #[cfg(feature = "crossterm-backend")]
     #[cfg_attr(feature = "doc-cfg", doc(cfg(feature = "crossterm-backend")))]
-    fn run_crossterm(&mut self) -> Result<(), crossterm::ErrorKind> {
+    fn run_crossterm(&mut self) -> Result<(), std::io::Error> {
         self.try_run_with(crate::backends::crossterm::Backend::init)
     }
 

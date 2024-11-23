@@ -1,9 +1,6 @@
 use cursive::{
     traits::*,
-    views::{
-        Checkbox, Dialog, EditView, LinearLayout, ListView, SelectView,
-        TextArea, TextView,
-    },
+    views::{Checkbox, Dialog, EditView, LinearLayout, ListView, SelectView, TextArea, TextView},
 };
 
 // This example uses a ListView.
@@ -71,7 +68,7 @@ fn main() {
                         // We can also add children procedurally
                         for i in 0..50 {
                             list.add_child(
-                                &format!("Item {}", i),
+                                &format!("Item {i}"),
                                 EditView::new(),
                             );
                         }

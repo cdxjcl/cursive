@@ -29,11 +29,27 @@ impl<T: View> ViewWrapper for ThemedView<T> {
     wrap_impl!(self.view: T);
 
     fn wrap_draw(&self, printer: &crate::Printer) {
-        printer.theme(&self.theme).with_style(
-            crate::theme::ColorStyle::primary(),
-            |printer| {
+        // Hack: We need to re-apply the View (+Primary) style.
+        //
+        // InheritParent would not be enough because it re-uses the previous _concrete color_
+        // (after the theme is applied), so it would not pick up the theme new colors.
+        // Ideally we would need to know the previous _StyleType_ (before the theme is applied),
+        // but that's not easy for now.
+        printer
+            .theme(&self.theme)
+            .with_style(crate::style::PaletteStyle::View, |printer| {
                 self.view.draw(printer);
-            },
-        );
+            });
     }
 }
+
+#[crate::blueprint(ThemedView::new(theme, view))]
+struct Blueprint {
+    view: crate::views::BoxedView,
+    theme: crate::theme::Theme,
+}
+
+crate::manual_blueprint!(with theme, |config, context| {
+    let theme = context.resolve(config)?;
+    Ok(move |view| ThemedView::new(theme, view))
+});

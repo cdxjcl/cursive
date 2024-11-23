@@ -1,33 +1,32 @@
 //! Backend using the pure-rust crossplatform crossterm library.
 //!
 //! Requires the `crossterm-backend` feature.
-#![cfg(feature = "crossterm")]
+#![cfg(feature = "crossterm-backend")]
 #![cfg_attr(feature = "doc-cfg", doc(cfg(feature = "crossterm-backend")))]
 
 use std::{
     cell::{Cell, RefCell, RefMut},
-    io::{self, BufWriter, Write},
+    io::{BufWriter, Write},
     time::Duration,
 };
+
+#[cfg(unix)]
+use std::fs::File;
 
 pub use crossterm;
 
 use crossterm::{
     cursor,
     event::{
-        poll, read, DisableMouseCapture, EnableMouseCapture, Event as CEvent,
-        KeyCode, KeyEvent as CKeyEvent, KeyModifiers,
-        MouseButton as CMouseButton, MouseEvent as CMouseEvent,
-        MouseEventKind,
+        poll, read, DisableMouseCapture, EnableMouseCapture, Event as CEvent, KeyCode,
+        KeyEvent as CKeyEvent, KeyEventKind, KeyModifiers, MouseButton as CMouseButton,
+        MouseEvent as CMouseEvent, MouseEventKind,
     },
     execute, queue,
-    style::{
-        Attribute, Color, Print, SetAttribute, SetBackgroundColor,
-        SetForegroundColor,
-    },
+    style::{Attribute, Color, Print, SetAttribute, SetBackgroundColor, SetForegroundColor},
     terminal::{
-        self, disable_raw_mode, enable_raw_mode, Clear, ClearType,
-        EnterAlternateScreen, LeaveAlternateScreen,
+        self, disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen,
+        LeaveAlternateScreen,
     },
 };
 
@@ -38,7 +37,7 @@ use crate::{
 };
 
 #[cfg(windows)]
-type Stdout = io::Stdout;
+type Stdout = std::io::Stdout;
 
 #[cfg(unix)]
 type Stdout = std::fs::File;
@@ -82,82 +81,83 @@ fn translate_key(code: KeyCode) -> Option<Key> {
 }
 
 fn translate_event(event: CKeyEvent) -> Option<Event> {
-    const CTRL_ALT: KeyModifiers = KeyModifiers::from_bits_truncate(
-        KeyModifiers::CONTROL.bits() | KeyModifiers::ALT.bits(),
-    );
-    const CTRL_SHIFT: KeyModifiers = KeyModifiers::from_bits_truncate(
-        KeyModifiers::CONTROL.bits() | KeyModifiers::SHIFT.bits(),
-    );
-    const ALT_SHIFT: KeyModifiers = KeyModifiers::from_bits_truncate(
-        KeyModifiers::ALT.bits() | KeyModifiers::SHIFT.bits(),
-    );
+    const CTRL_ALT: KeyModifiers =
+        KeyModifiers::from_bits_truncate(KeyModifiers::CONTROL.bits() | KeyModifiers::ALT.bits());
+    const CTRL_SHIFT: KeyModifiers =
+        KeyModifiers::from_bits_truncate(KeyModifiers::CONTROL.bits() | KeyModifiers::SHIFT.bits());
+    const ALT_SHIFT: KeyModifiers =
+        KeyModifiers::from_bits_truncate(KeyModifiers::ALT.bits() | KeyModifiers::SHIFT.bits());
 
-    Some(match event {
-        // Handle Char + modifier.
-        CKeyEvent {
-            modifiers: KeyModifiers::CONTROL,
-            code: KeyCode::Char(c),
-            ..
-        } => Event::CtrlChar(c),
-        CKeyEvent {
-            modifiers: KeyModifiers::ALT,
-            code: KeyCode::Char(c),
-            ..
-        } => Event::AltChar(c),
-        CKeyEvent {
-            modifiers: KeyModifiers::SHIFT,
-            code: KeyCode::Char(c),
-            ..
-        } => Event::Char(c),
-        CKeyEvent {
-            code: KeyCode::Char(c),
-            ..
-        } => Event::Char(c),
-        // From now on, assume the key is never a `Char`.
+    if event.kind == KeyEventKind::Press {
+        Some(match event {
+            // Handle Char + modifier.
+            CKeyEvent {
+                modifiers: KeyModifiers::CONTROL,
+                code: KeyCode::Char(c),
+                ..
+            } => Event::CtrlChar(c),
+            CKeyEvent {
+                modifiers: KeyModifiers::ALT,
+                code: KeyCode::Char(c),
+                ..
+            } => Event::AltChar(c),
+            CKeyEvent {
+                modifiers: KeyModifiers::SHIFT,
+                code: KeyCode::Char(c),
+                ..
+            } => Event::Char(c),
+            CKeyEvent {
+                code: KeyCode::Char(c),
+                ..
+            } => Event::Char(c),
+            // From now on, assume the key is never a `Char`.
 
-        // Explicitly handle 'backtab' since crossterm does not sent SHIFT alongside the back tab key.
-        CKeyEvent {
-            code: KeyCode::BackTab,
-            ..
-        } => Event::Shift(Key::Tab),
+            // Explicitly handle 'backtab' since crossterm does not sent SHIFT alongside the back tab key.
+            CKeyEvent {
+                code: KeyCode::BackTab,
+                ..
+            } => Event::Shift(Key::Tab),
 
-        // Handle key + multiple modifiers
-        CKeyEvent {
-            modifiers: CTRL_ALT,
-            code,
-            ..
-        } => Event::CtrlAlt(translate_key(code)?),
-        CKeyEvent {
-            modifiers: CTRL_SHIFT,
-            code,
-            ..
-        } => Event::CtrlShift(translate_key(code)?),
-        CKeyEvent {
-            modifiers: ALT_SHIFT,
-            code,
-            ..
-        } => Event::AltShift(translate_key(code)?),
+            // Handle key + multiple modifiers
+            CKeyEvent {
+                modifiers: CTRL_ALT,
+                code,
+                ..
+            } => Event::CtrlAlt(translate_key(code)?),
+            CKeyEvent {
+                modifiers: CTRL_SHIFT,
+                code,
+                ..
+            } => Event::CtrlShift(translate_key(code)?),
+            CKeyEvent {
+                modifiers: ALT_SHIFT,
+                code,
+                ..
+            } => Event::AltShift(translate_key(code)?),
 
-        // Handle key + single modifier
-        CKeyEvent {
-            modifiers: KeyModifiers::CONTROL,
-            code,
-            ..
-        } => Event::Ctrl(translate_key(code)?),
-        CKeyEvent {
-            modifiers: KeyModifiers::ALT,
-            code,
-            ..
-        } => Event::Alt(translate_key(code)?),
-        CKeyEvent {
-            modifiers: KeyModifiers::SHIFT,
-            code,
-            ..
-        } => Event::Shift(translate_key(code)?),
+            // Handle key + single modifier
+            CKeyEvent {
+                modifiers: KeyModifiers::CONTROL,
+                code,
+                ..
+            } => Event::Ctrl(translate_key(code)?),
+            CKeyEvent {
+                modifiers: KeyModifiers::ALT,
+                code,
+                ..
+            } => Event::Alt(translate_key(code)?),
+            CKeyEvent {
+                modifiers: KeyModifiers::SHIFT,
+                code,
+                ..
+            } => Event::Shift(translate_key(code)?),
 
-        // All other keys.
-        CKeyEvent { code, .. } => Event::Key(translate_key(code)?),
-    })
+            // All other keys.
+            CKeyEvent { code, .. } => Event::Key(translate_key(code)?),
+        })
+    } else {
+        None
+    }
 }
 
 fn translate_color(base_color: theme::Color) -> Color {
@@ -180,15 +180,18 @@ fn translate_color(base_color: theme::Color) -> Color {
         theme::Color::Light(theme::BaseColor::White) => Color::White,
         theme::Color::Rgb(r, g, b) => Color::Rgb { r, g, b },
         theme::Color::RgbLowRes(r, g, b) => {
-            debug_assert!(r <= 5,
-                              "Red color fragment (r = {}) is out of bound. Make sure r ≤ 5.",
-                              r);
-            debug_assert!(g <= 5,
-                              "Green color fragment (g = {}) is out of bound. Make sure g ≤ 5.",
-                              g);
-            debug_assert!(b <= 5,
-                              "Blue color fragment (b = {}) is out of bound. Make sure b ≤ 5.",
-                              b);
+            debug_assert!(
+                r <= 5,
+                "Red color fragment (r = {r}) is out of bound. Make sure r ≤ 5."
+            );
+            debug_assert!(
+                g <= 5,
+                "Green color fragment (g = {g}) is out of bound. Make sure g ≤ 5."
+            );
+            debug_assert!(
+                b <= 5,
+                "Blue color fragment (b = {b}) is out of bound. Make sure b ≤ 5."
+            );
 
             Color::AnsiValue(16 + 36 * r + 6 * g + b)
         }
@@ -198,31 +201,45 @@ fn translate_color(base_color: theme::Color) -> Color {
 
 impl Backend {
     /// Creates a new crossterm backend.
-    pub fn init() -> Result<Box<dyn backend::Backend>, crossterm::ErrorKind>
+    pub fn init() -> Result<Box<dyn backend::Backend>, std::io::Error>
+    where
+        Self: Sized,
+    {
+        #[cfg(unix)]
+        let stdout = std::fs::File::create("/dev/tty")?;
+
+        #[cfg(windows)]
+        let stdout = std::io::stdout();
+
+        Self::init_with_stdout(stdout)
+    }
+
+    fn init_with_stdout(mut stdout: Stdout) -> Result<Box<dyn backend::Backend>, std::io::Error>
     where
         Self: Sized,
     {
         enable_raw_mode()?;
 
-        // TODO: Use the stdout we define down there
         execute!(
-            io::stdout(),
+            stdout,
             EnterAlternateScreen,
             EnableMouseCapture,
             cursor::Hide
         )?;
 
-        #[cfg(unix)]
-        let stdout =
-            RefCell::new(BufWriter::new(std::fs::File::create("/dev/tty")?));
-
-        #[cfg(windows)]
-        let stdout = RefCell::new(BufWriter::new(io::stdout()));
-
         Ok(Box::new(Backend {
             current_style: Cell::new(theme::ColorPair::from_256colors(0, 0)),
-            stdout,
+            stdout: RefCell::new(BufWriter::new(stdout)),
         }))
+    }
+
+    /// Create a new crossterm backend with provided output file. Unix only
+    #[cfg(unix)]
+    pub fn init_with_stdout_file(outfile: File) -> Result<Box<dyn backend::Backend>, std::io::Error>
+    where
+        Self: Sized,
+    {
+        Self::init_with_stdout(outfile)
     }
 
     fn apply_colors(&self, colors: theme::ColorPair) {
@@ -241,7 +258,7 @@ impl Backend {
     }
 
     fn with_stdout(&self, f: impl FnOnce(&mut BufWriter<Stdout>)) {
-        f(&mut *self.stdout_mut());
+        f(&mut self.stdout_mut());
     }
 
     fn set_attr(&self, attr: Attribute) {
@@ -259,20 +276,18 @@ impl Backend {
             }) => {
                 let position = (column, row).into();
                 let event = match kind {
-                    MouseEventKind::Down(button) => {
-                        MouseEvent::Press(translate_button(button))
-                    }
-                    MouseEventKind::Up(button) => {
-                        MouseEvent::Release(translate_button(button))
-                    }
-                    MouseEventKind::Drag(button) => {
-                        MouseEvent::Hold(translate_button(button))
-                    }
+                    MouseEventKind::Down(button) => MouseEvent::Press(translate_button(button)),
+                    MouseEventKind::Up(button) => MouseEvent::Release(translate_button(button)),
+                    MouseEventKind::Drag(button) => MouseEvent::Hold(translate_button(button)),
                     MouseEventKind::Moved => {
                         return None;
                     }
                     MouseEventKind::ScrollDown => MouseEvent::WheelDown,
                     MouseEventKind::ScrollUp => MouseEvent::WheelUp,
+                    MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {
+                        // TODO: Currently unsupported.
+                        return None;
+                    }
                 };
 
                 Event::Mouse {
@@ -312,6 +327,10 @@ impl Drop for Backend {
 }
 
 impl backend::Backend for Backend {
+    fn is_persistent(&self) -> bool {
+        true
+    }
+
     fn poll_event(&mut self) -> Option<Event> {
         match poll(Duration::from_millis(1)) {
             Ok(true) => match read() {
@@ -319,16 +338,14 @@ impl backend::Backend for Backend {
                     Some(event) => Some(event),
                     None => self.poll_event(),
                 },
-                Err(e) => panic!("{:?}", e),
+                Err(e) => panic!("{e:?}"),
             },
             _ => None,
         }
     }
 
     fn set_title(&mut self, title: String) {
-        self.with_stdout(|stdout| {
-            execute!(stdout, terminal::SetTitle(title)).unwrap()
-        });
+        self.with_stdout(|stdout| execute!(stdout, terminal::SetTitle(title)).unwrap());
     }
 
     fn refresh(&mut self) {
@@ -345,32 +362,14 @@ impl backend::Backend for Backend {
         Vec2::from(size)
     }
 
-    fn print_at(&self, pos: Vec2, text: &str) {
+    fn move_to(&self, pos: Vec2) {
         self.with_stdout(|stdout| {
-            queue!(
-                stdout,
-                cursor::MoveTo(pos.x as u16, pos.y as u16),
-                Print(text)
-            )
-            .unwrap()
+            queue!(stdout, cursor::MoveTo(pos.x as u16, pos.y as u16)).unwrap()
         });
     }
 
-    fn print_at_rep(&self, pos: Vec2, repetitions: usize, text: &str) {
-        if repetitions > 0 {
-            self.with_stdout(|out| {
-                queue!(out, cursor::MoveTo(pos.x as u16, pos.y as u16))
-                    .unwrap();
-
-                out.write_all(text.as_bytes()).unwrap();
-
-                let mut dupes_left = repetitions - 1;
-                while dupes_left > 0 {
-                    out.write_all(text.as_bytes()).unwrap();
-                    dupes_left -= 1;
-                }
-            });
-        }
+    fn print(&self, text: &str) {
+        self.with_stdout(|stdout| queue!(stdout, Print(text)).unwrap());
     }
 
     fn clear(&self, color: theme::Color) {
@@ -379,9 +378,7 @@ impl backend::Backend for Backend {
             back: color,
         });
 
-        self.with_stdout(|stdout| {
-            queue!(stdout, Clear(ClearType::All)).unwrap()
-        });
+        self.with_stdout(|stdout| queue!(stdout, Clear(ClearType::All)).unwrap());
     }
 
     fn set_color(&self, color: theme::ColorPair) -> theme::ColorPair {
@@ -403,9 +400,7 @@ impl backend::Backend for Backend {
             theme::Effect::Bold => self.set_attr(Attribute::Bold),
             theme::Effect::Blink => self.set_attr(Attribute::SlowBlink),
             theme::Effect::Italic => self.set_attr(Attribute::Italic),
-            theme::Effect::Strikethrough => {
-                self.set_attr(Attribute::CrossedOut)
-            }
+            theme::Effect::Strikethrough => self.set_attr(Attribute::CrossedOut),
             theme::Effect::Underline => self.set_attr(Attribute::Underlined),
         }
     }
@@ -414,14 +409,10 @@ impl backend::Backend for Backend {
         match effect {
             theme::Effect::Simple => (),
             theme::Effect::Reverse => self.set_attr(Attribute::NoReverse),
-            theme::Effect::Dim | theme::Effect::Bold => {
-                self.set_attr(Attribute::NormalIntensity)
-            }
+            theme::Effect::Dim | theme::Effect::Bold => self.set_attr(Attribute::NormalIntensity),
             theme::Effect::Blink => self.set_attr(Attribute::NoBlink),
             theme::Effect::Italic => self.set_attr(Attribute::NoItalic),
-            theme::Effect::Strikethrough => {
-                self.set_attr(Attribute::NotCrossedOut)
-            }
+            theme::Effect::Strikethrough => self.set_attr(Attribute::NotCrossedOut),
             theme::Effect::Underline => self.set_attr(Attribute::NoUnderline),
         }
     }

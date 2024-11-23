@@ -73,6 +73,7 @@ mod edit_view;
 mod enableable_view;
 mod fixed_layout;
 mod focus_tracker;
+mod gradient_view;
 mod hideable_view;
 mod last_size_view;
 mod layer;
@@ -93,7 +94,7 @@ mod scroll_view;
 mod select_view;
 mod shadow_view;
 mod slider_view;
-mod stack_view;
+pub mod stack_view;
 mod text_area;
 mod text_view;
 mod themed_view;
@@ -112,6 +113,7 @@ pub use self::{
     enableable_view::EnableableView,
     fixed_layout::FixedLayout,
     focus_tracker::FocusTracker,
+    gradient_view::GradientView,
     hideable_view::HideableView,
     last_size_view::LastSizeView,
     layer::Layer,
